@@ -120,7 +120,7 @@ if __name__ == "__main__":
     # Quick validation
     import sys
     sys.path.insert(0, '..')
-    from data.dataset import load_etf_prices
+    from dataset import load_etf_prices
 
     prices = load_etf_prices()
     print(f"Prices shape: {prices.shape}")
