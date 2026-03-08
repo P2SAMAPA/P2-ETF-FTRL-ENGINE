@@ -32,17 +32,32 @@ COLORS    = {
 # ── Data loading ──────────────────────────────────────────────────────────────
 @st.cache_data(ttl=3600)
 def load_summary() -> pd.DataFrame:
-    try:
-        path = hf_hub_download(
-            repo_id=HF_REPO,
-            filename="results/all_windows_summary.json",
-            repo_type="dataset"
-        )
-        with open(path) as f:
-            data = json.load(f)
-        return pd.DataFrame(data)
-    except Exception:
+    frames = []
+    for w_id in range(1, 15):
+        try:
+            path = hf_hub_download(
+                repo_id=HF_REPO,
+                filename=f"results/window_{w_id:02d}_summary.json",
+                repo_type="dataset"
+            )
+            with open(path) as f:
+                data = json.load(f)
+            frames.append(data)
+        except Exception:
+            continue
+    if not frames:
         return pd.DataFrame()
+    df = pd.DataFrame(frames)
+    # Normalise column names from train.py output
+    df = df.rename(columns={
+        'ftrl_total_return': 'ftrl_return',
+        'agg_total_return':  'agg_return',
+        'ftrl_max_drawdown': 'ftrl_max_dd',
+    })
+    df['beats_benchmark'] = df['ftrl_return'] > df['agg_return']
+    df['agg_sharpe'] = 0.0
+    df['agg_max_dd'] = 0.0
+    return df
 
 
 @st.cache_data(ttl=3600)
@@ -50,7 +65,7 @@ def load_window_daily(window_id: int) -> pd.DataFrame:
     try:
         path = hf_hub_download(
             repo_id=HF_REPO,
-            filename=f"results/backtest_window_{window_id:02d}.csv",
+            filename=f"results/window_{window_id:02d}_daily.csv",
             repo_type="dataset"
         )
         df = pd.read_csv(path, parse_dates=['date'], index_col='date')
@@ -182,10 +197,6 @@ with tab1:
         'FTRL Sharpe', 'AGG Sharpe', 'FTRL MaxDD', 'AGG MaxDD', 'Beats'
     ]
 
-    def style_row(row):
-        color = 'background-color: #1a3a1a' if row['Beats'] else 'background-color: #3a1a1a'
-        return [color] * len(row)
-
     pct_cols = ['FTRL Return', 'AGG Return', 'Excess', 'FTRL MaxDD', 'AGG MaxDD']
     for col in pct_cols:
         display_df[col] = display_df[col].apply(lambda x: f"{x*100:+.2f}%")
@@ -228,7 +239,6 @@ with tab2:
     else:
         fig = go.Figure()
 
-        # Plot each window's equity curve
         for w_id in sorted(all_daily['window_id'].unique()):
             w_df  = all_daily[all_daily['window_id'] == w_id]
             curve = build_equity_curve(w_df)
@@ -287,7 +297,6 @@ with tab3:
         weight_cols = [f'w_{a}' for a in ASSETS if f'w_{a}' in all_daily.columns]
 
         if weight_cols:
-            # Average weights per window
             avg_weights = []
             for w_id in sorted(all_daily['window_id'].unique()):
                 w_df = all_daily[all_daily['window_id'] == w_id]
@@ -301,7 +310,6 @@ with tab3:
 
             wt_df = pd.DataFrame(avg_weights)
 
-            # Stacked bar: average weights per year
             fig = go.Figure()
             for asset in ASSETS:
                 if asset in wt_df.columns:
@@ -316,7 +324,6 @@ with tab3:
             )
             st.plotly_chart(fig, use_container_width=True)
 
-            # Weight over time for selected window
             st.subheader("Daily Weights — Select Window")
             available_years = []
             for w_id in sorted(all_daily['window_id'].unique()):
@@ -367,10 +374,9 @@ with tab4:
             )
         )
 
-        row    = summary_df[summary_df['window_id'] == sel_wid].iloc[0]
+        row     = summary_df[summary_df['window_id'] == sel_wid].iloc[0]
         w_daily = load_window_daily(sel_wid)
 
-        # KPI row
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("FTRL Return",  f"{row['ftrl_return']*100:+.2f}%",
                   f"{row['excess_return']*100:+.2f}% vs AGG")
@@ -381,7 +387,6 @@ with tab4:
                   f"{(row['ftrl_max_dd']-row['agg_max_dd'])*100:+.2f}% vs AGG")
 
         if not w_daily.empty:
-            # Equity curve for this window
             curve = build_equity_curve(w_daily)
             fig   = go.Figure()
             fig.add_scatter(
@@ -398,7 +403,6 @@ with tab4:
             )
             st.plotly_chart(fig, use_container_width=True)
 
-            # Drawdown chart
             peak = curve.cummax()
             dd   = (curve - peak) / peak
             fig2 = go.Figure()
