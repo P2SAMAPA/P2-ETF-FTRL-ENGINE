@@ -1,0 +1,42 @@
+name: Aggregate Results
+
+on:
+  workflow_dispatch:
+  # Auto-run after any training push to results directory
+  push:
+    paths:
+      - 'results/**'
+
+jobs:
+  aggregate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Aggregate all window results
+        env:
+          HF_TOKEN:        ${{ secrets.HF_TOKEN }}
+          HF_DATASET_REPO: ${{ secrets.HF_DATASET_REPO }}
+          HF_SOURCE_REPO:  ${{ secrets.HF_SOURCE_REPO }}
+        run: |
+          python src/aggregate.py
+
+      - name: Upload summary artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: aggregated-results
+          path: output/results/
+          retention-days: 30
