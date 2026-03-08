@@ -1,0 +1,66 @@
+name: Train FTRL Window
+
+on:
+  workflow_dispatch:
+    inputs:
+      window_id:
+        description: 'Walk-forward window ID (1-14)'
+        required: true
+        default: '1'
+        type: choice
+        options:
+          - '1'
+          - '2'
+          - '3'
+          - '4'
+          - '5'
+          - '6'
+          - '7'
+          - '8'
+          - '9'
+          - '10'
+          - '11'
+          - '12'
+          - '13'
+          - '14'
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350  # 5h 50min — within 6h free tier limit
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Show system info
+        run: |
+          python -c "import torch; print('PyTorch:', torch.__version__)"
+          python -c "import torch; print('CPU threads:', torch.get_num_threads())"
+          nproc
+          free -h
+
+      - name: Train window ${{ github.event.inputs.window_id }}
+        env:
+          HF_TOKEN:        ${{ secrets.HF_TOKEN }}
+          HF_DATASET_REPO: ${{ secrets.HF_DATASET_REPO }}
+          HF_SOURCE_REPO:  ${{ secrets.HF_SOURCE_REPO }}
+        run: |
+          python src/train.py --window ${{ github.event.inputs.window_id }} --device cpu
+
+      - name: Upload artifacts (local backup)
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: window-${{ github.event.inputs.window_id }}-results
+          path: output/
+          retention-days: 30
