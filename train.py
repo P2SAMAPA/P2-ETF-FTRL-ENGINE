@@ -11,11 +11,10 @@ from huggingface_hub import HfApi
 
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 import config as cfg
-from data.dataset import load_etf_prices, load_benchmark_prices, get_window_data, align_dates
-from data.features import compute_features, build_price_matrices, normalise_features
+from dataset import load_etf_prices, load_benchmark_prices, get_window_data, align_dates
+from features import compute_features, build_price_matrices, normalise_features
 from environment import PortfolioEnv
-from model.ddpg import DDPGTrainer
-
+from ddpg import DDPGTrainer
 
 def parse_args():
     parser = argparse.ArgumentParser()
