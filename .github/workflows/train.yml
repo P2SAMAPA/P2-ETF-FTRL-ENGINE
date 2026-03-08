@@ -50,7 +50,7 @@ jobs:
           HF_DATASET_REPO: ${{ secrets.HF_DATASET_REPO }}
           HF_SOURCE_REPO:  ${{ secrets.HF_SOURCE_REPO }}
         run: |
-          python train.py --window ${{ github.event.inputs.window_id }} --device cpu
+          python train.py --window ${{ github.event.inputs.window_id }} 
       - name: Upload artifacts (local backup)
         uses: actions/upload-artifact@v4
         if: always()
