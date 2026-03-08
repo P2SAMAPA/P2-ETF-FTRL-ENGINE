@@ -5,9 +5,8 @@ import numpy as np
 from huggingface_hub import hf_hub_download
 import sys
 import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 import config as cfg
-
 
 def load_etf_prices() -> pd.DataFrame:
     """
