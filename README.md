@@ -4,7 +4,10 @@ Financial Transformer Reinforcement Learning (FTRL) for 6-ETF portfolio manageme
 
 ## Architecture
 
-Based on: *"Time Series is Not Enough: Financial Transformer Reinforcement Learning for Portfolio Management"*
+Based on: *"Time Series is Not Enough: Financial Transformer Reinforcement Learning for Portfolio Management"* by Xiaotian Rena,1, Ruoyu Suna,2, Zhengyong Jianga,3, Angelos Stefanidisa,4,
+Hongbin Liua,5,∗∗, Jionglong Sua,6,
+School of AI and Advanced Computing, XJTLU Entrepreneur College (Taicang), Xi’an
+Jiaotong-Liverpool University, Suzhou, 215123, China
 
 | Component | Description |
 |-----------|-------------|
