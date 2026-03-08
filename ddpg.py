@@ -9,10 +9,10 @@ import json
 import os
 import copy
 import sys
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 import config as cfg
-from model.ft import Actor
-from model.critic import Critic
+from ft import Actor
+from critic import Critic
 from environment import PortfolioEnv, ReplayBuffer
 
 
