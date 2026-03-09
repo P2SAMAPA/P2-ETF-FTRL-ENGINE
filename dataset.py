@@ -19,6 +19,7 @@ def load_etf_prices() -> pd.DataFrame:
         filename=cfg.ETF_FILE,
         repo_type="dataset",
         token=cfg.HF_TOKEN if cfg.HF_TOKEN else None,
+        force_download=True,   # always fetch latest — avoids stale cached parquet
     )
     df = pd.read_parquet(path)
 
@@ -58,6 +59,7 @@ def load_benchmark_prices() -> pd.Series:
         filename=cfg.BENCH_FILE,
         repo_type="dataset",
         token=cfg.HF_TOKEN if cfg.HF_TOKEN else None,
+        force_download=True,   # always fetch latest — avoids stale cached parquet
     )
     df = pd.read_parquet(path)
 
