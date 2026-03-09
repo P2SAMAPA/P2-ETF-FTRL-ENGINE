@@ -264,53 +264,71 @@ history_rev        = load_reverse_signal_history()
 # ═══════════════════════════════════════════════════════════════════════════════
 # WEIGHTED CONSENSUS ENGINE
 # Score = 0.50 * avg_daily_excess + 0.30 * live_sharpe - 0.20 * abs(live_max_dd)
-# Uses live scored signal history — self-correcting as audit trail grows.
-# Bootstrap: <5 scored days → no consensus; 5-14 → provisional; 15-29 → moderate; 30+ → full
+# Bootstrap:  <5  days → no consensus
+#             5-14     → provisional  (uses all available history)
+#             15-29    → moderate     (uses all available history)
+#             30+      → full         (uses rolling SCORE_WINDOW days)
+# SCORE_WINDOW activates at Full Conviction to prevent stale history anchoring.
 # ═══════════════════════════════════════════════════════════════════════════════
 
 MIN_DAYS_PROVISIONAL = 5
 MIN_DAYS_MODERATE    = 15
 MIN_DAYS_FULL        = 30
+SCORE_WINDOW         = 60   # rolling days used once Full Conviction is reached
 
 W_RETURN = 0.50
 W_SHARPE = 0.30
 W_DD     = 0.20
 
 
-def compute_live_score(history_df: pd.DataFrame) -> tuple:
+def compute_live_score(history_df: pd.DataFrame,
+                       n_total: int) -> tuple:
     """
     Compute live weighted score from scored signal history.
-    Returns (score, avg_excess, sharpe, max_dd, n_scored).
+    - Below MIN_DAYS_FULL: uses all available scored days.
+    - At or above MIN_DAYS_FULL: uses only the most recent SCORE_WINDOW days
+      so stale performance doesn't anchor the score permanently.
+    Returns (score, avg_excess, sharpe, max_dd, n_scored, window_used).
     """
     if history_df.empty:
-        return None, 0.0, 0.0, 0.0, 0
+        return None, 0.0, 0.0, 0.0, 0, 0
 
     scored = history_df[history_df['beats_agg'].notna() &
                         history_df['excess_return'].notna()].copy()
+    # Sort ascending so most recent is at end
+    scored = scored.sort_values('date', ascending=True)
     n = len(scored)
     if n == 0:
-        return None, 0.0, 0.0, 0.0, 0
+        return None, 0.0, 0.0, 0.0, 0, 0
+
+    # Apply rolling window only once Full Conviction threshold is reached
+    if n_total >= MIN_DAYS_FULL:
+        scored       = scored.tail(SCORE_WINDOW)
+        window_used  = SCORE_WINDOW
+    else:
+        window_used  = n
 
     daily_exc   = scored['excess_return'].values
     avg_excess  = float(daily_exc.mean())
-    live_sharpe = float((daily_exc.mean() / (daily_exc.std() + 1e-8)) * np.sqrt(252))
+    live_sharpe = float((daily_exc.mean() /
+                         (daily_exc.std() + 1e-8)) * np.sqrt(252))
 
     # Max drawdown on cumulative excess return curve
-    cum = np.cumprod(1 + daily_exc)
-    peak = np.maximum.accumulate(cum)
-    dd   = (cum - peak) / (peak + 1e-8)
+    cum    = np.cumprod(1 + daily_exc)
+    peak   = np.maximum.accumulate(cum)
+    dd     = (cum - peak) / (peak + 1e-8)
     max_dd = float(dd.min())
 
     score = (W_RETURN * avg_excess +
              W_SHARPE * live_sharpe -
              W_DD     * abs(max_dd))
 
-    return score, avg_excess, live_sharpe, max_dd, n
+    return score, avg_excess, live_sharpe, max_dd, n, window_used
 
 
 def consensus_label(n_scored: int) -> str:
     if n_scored < MIN_DAYS_PROVISIONAL:
-        return None   # no consensus yet
+        return None
     if n_scored < MIN_DAYS_MODERATE:
         return "provisional"
     if n_scored < MIN_DAYS_FULL:
@@ -319,8 +337,13 @@ def consensus_label(n_scored: int) -> str:
 
 
 # ── Compute scores ────────────────────────────────────────────────────────────
-exp_score, exp_avg_exc, exp_sharpe, exp_max_dd, exp_n = compute_live_score(history_exp)
-rev_score, rev_avg_exc, rev_sharpe, rev_max_dd, rev_n = compute_live_score(history_rev)
+# Pass total scored count so compute_live_score knows whether to apply
+# the rolling window or use all available history
+exp_n_total = int(history_exp[history_exp['beats_agg'].notna()].shape[0]) if not history_exp.empty else 0
+rev_n_total = int(history_rev[history_rev['beats_agg'].notna()].shape[0]) if not history_rev.empty else 0
+
+exp_score, exp_avg_exc, exp_sharpe, exp_max_dd, exp_n, exp_win = compute_live_score(history_exp, exp_n_total)
+rev_score, rev_avg_exc, rev_sharpe, rev_max_dd, rev_n, rev_win = compute_live_score(history_rev, rev_n_total)
 
 # Consensus confidence level — use the lesser of the two scored counts
 min_n     = min(exp_n, rev_n)
@@ -404,6 +427,14 @@ if has_exp or has_rev:
             # Score breakdown expander
             if con_level is not None and exp_score is not None:
                 with st.expander("📊 Score breakdown"):
+                    # Show which window is being used for scoring
+                    if min_n >= MIN_DAYS_FULL:
+                        st.caption(f"🔄 Rolling {SCORE_WINDOW}-day window active "
+                                   f"(Full Conviction reached at {MIN_DAYS_FULL} days)")
+                    else:
+                        st.caption(f"📈 Using all {min_n} available scored days "
+                                   f"(rolling {SCORE_WINDOW}-day window activates at "
+                                   f"{MIN_DAYS_FULL} days)")
                     sc1, sc2 = st.columns(2)
                     with sc1:
                         st.markdown("**Expanding**")
@@ -411,14 +442,16 @@ if has_exp or has_rev:
                         st.markdown(f"Avg daily excess: `{exp_avg_exc:+.3%}`")
                         st.markdown(f"Live Sharpe: `{exp_sharpe:.3f}`")
                         st.markdown(f"Live Max DD: `{exp_max_dd:.2%}`")
-                        st.markdown(f"Scored days: `{exp_n}`")
+                        st.markdown(f"Scored days: `{exp_n}` "
+                                    f"(window: {exp_win})")
                     with sc2:
                         st.markdown("**Reverse**")
                         st.markdown(f"Score: `{rev_score:.4f}`")
                         st.markdown(f"Avg daily excess: `{rev_avg_exc:+.3%}`")
                         st.markdown(f"Live Sharpe: `{rev_sharpe:.3f}`")
                         st.markdown(f"Live Max DD: `{rev_max_dd:.2%}`")
-                        st.markdown(f"Scored days: `{rev_n}`")
+                        st.markdown(f"Scored days: `{rev_n}` "
+                                    f"(window: {rev_win})")
 
     elif has_exp:
         col1, col2 = st.columns([1, 2])
