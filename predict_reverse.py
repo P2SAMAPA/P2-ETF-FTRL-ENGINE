@@ -170,8 +170,7 @@ def score_yesterday(prev_signal: dict, prices: pd.DataFrame,
         return None
 
 
-def train_on_window(window: dict,
-                    prices: pd.DataFrame) -> tuple:
+def train_on_window(window: dict, prices: pd.DataFrame) -> tuple:
     """Train DDPG on the given reverse window's date range."""
     train_prices = prices[
         (prices.index >= window['train_start']) &
@@ -205,7 +204,12 @@ def train_on_window(window: dict,
     train_mat = train_mat[:n]
     train_ret = train_ret[:n]
 
-    env     = PortfolioEnv(train_mat, train_ret)
+    env = PortfolioEnv(train_mat, train_ret)
+
+    # Cap predict runs at 30 epochs — full 50 is too slow on large datasets.
+    # Early stopping patience (10) unchanged so model can still bail early.
+    cfg.MAX_EPOCHS = 30
+
     trainer = DDPGTrainer(window_id=200)   # 200 = reverse predict run
     trainer.train(env, "/tmp/ftrl_reverse_predict")
     trainer.load_best("/tmp/ftrl_reverse_predict")
@@ -221,8 +225,8 @@ def get_signal(trainer: DDPGTrainer, feat: np.ndarray,
     if feat.shape[0] < H:
         raise ValueError(f"Not enough data: {feat.shape[0]} < {H}")
 
-    latest  = feat[-H:].transpose(1, 0, 2)          # (C, H, W)
-    mat_t   = torch.FloatTensor(latest).unsqueeze(0) # (1, C, H, W)
+    latest  = feat[-H:].transpose(1, 0, 2)           # (C, H, W)
+    mat_t   = torch.FloatTensor(latest).unsqueeze(0)  # (1, C, H, W)
     wts_t   = torch.ones(1, cfg.W) / cfg.W
 
     with torch.no_grad():
