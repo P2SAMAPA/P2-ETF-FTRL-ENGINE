@@ -1,5 +1,9 @@
 name: Train FTRL Window
+
 on:
+  schedule:
+    # First Monday of each month at 20:00 UTC — re-validates all windows
+    - cron: '0 20 1-7 * 1'
   workflow_dispatch:
     inputs:
       window_id:
@@ -33,10 +37,12 @@ jobs:
       - name: Set matrix
         id: set-matrix
         run: |
-          if [ "${{ github.event.inputs.window_id }}" = "all" ]; then
+          # For scheduled runs, always run all 14
+          INPUT="${{ github.event.inputs.window_id }}"
+          if [ -z "$INPUT" ] || [ "$INPUT" = "all" ]; then
             echo 'matrix={"window":["1","2","3","4","5","6","7","8","9","10","11","12","13","14"]}' >> $GITHUB_OUTPUT
           else
-            echo 'matrix={"window":["${{ github.event.inputs.window_id }}"]}' >> $GITHUB_OUTPUT
+            echo "matrix={\"window\":[\"$INPUT\"]}" >> $GITHUB_OUTPUT
           fi
 
   train:
@@ -46,24 +52,33 @@ jobs:
     strategy:
       matrix: ${{ fromJson(needs.setup.outputs.matrix) }}
       fail-fast: false
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
+
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
+
       - name: Install dependencies
         run: pip install -r requirements.txt
+
+      - name: Install torch
+        run: pip install torch==2.2.2 --index-url https://download.pytorch.org/whl/cpu
+
       - name: Set PYTHONPATH
         run: echo "PYTHONPATH=$(pwd)" >> $GITHUB_ENV
+
       - name: Show system info
         run: |
           python -c "import torch; print('PyTorch:', torch.__version__)"
           python -c "import torch; print('CPU threads:', torch.get_num_threads())"
           nproc
           free -h
+
       - name: Train window ${{ matrix.window }}
         env:
           HF_TOKEN:        ${{ secrets.HF_TOKEN }}
@@ -71,6 +86,7 @@ jobs:
           HF_SOURCE_REPO:  ${{ secrets.HF_SOURCE_REPO }}
         run: |
           python train.py --window ${{ matrix.window }}
+
       - name: Upload artifacts (local backup)
         uses: actions/upload-artifact@v4
         if: always()
