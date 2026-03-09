@@ -262,8 +262,71 @@ history_exp        = load_signal_history()
 history_rev        = load_reverse_signal_history()
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# SIGNAL PANEL
+# WEIGHTED CONSENSUS ENGINE
+# Score = 0.50 * avg_daily_excess + 0.30 * live_sharpe - 0.20 * abs(live_max_dd)
+# Uses live scored signal history — self-correcting as audit trail grows.
+# Bootstrap: <5 scored days → no consensus; 5-14 → provisional; 15-29 → moderate; 30+ → full
 # ═══════════════════════════════════════════════════════════════════════════════
+
+MIN_DAYS_PROVISIONAL = 5
+MIN_DAYS_MODERATE    = 15
+MIN_DAYS_FULL        = 30
+
+W_RETURN = 0.50
+W_SHARPE = 0.30
+W_DD     = 0.20
+
+
+def compute_live_score(history_df: pd.DataFrame) -> tuple:
+    """
+    Compute live weighted score from scored signal history.
+    Returns (score, avg_excess, sharpe, max_dd, n_scored).
+    """
+    if history_df.empty:
+        return None, 0.0, 0.0, 0.0, 0
+
+    scored = history_df[history_df['beats_agg'].notna() &
+                        history_df['excess_return'].notna()].copy()
+    n = len(scored)
+    if n == 0:
+        return None, 0.0, 0.0, 0.0, 0
+
+    daily_exc   = scored['excess_return'].values
+    avg_excess  = float(daily_exc.mean())
+    live_sharpe = float((daily_exc.mean() / (daily_exc.std() + 1e-8)) * np.sqrt(252))
+
+    # Max drawdown on cumulative excess return curve
+    cum = np.cumprod(1 + daily_exc)
+    peak = np.maximum.accumulate(cum)
+    dd   = (cum - peak) / (peak + 1e-8)
+    max_dd = float(dd.min())
+
+    score = (W_RETURN * avg_excess +
+             W_SHARPE * live_sharpe -
+             W_DD     * abs(max_dd))
+
+    return score, avg_excess, live_sharpe, max_dd, n
+
+
+def consensus_label(n_scored: int) -> str:
+    if n_scored < MIN_DAYS_PROVISIONAL:
+        return None   # no consensus yet
+    if n_scored < MIN_DAYS_MODERATE:
+        return "provisional"
+    if n_scored < MIN_DAYS_FULL:
+        return "moderate"
+    return "full"
+
+
+# ── Compute scores ────────────────────────────────────────────────────────────
+exp_score, exp_avg_exc, exp_sharpe, exp_max_dd, exp_n = compute_live_score(history_exp)
+rev_score, rev_avg_exc, rev_sharpe, rev_max_dd, rev_n = compute_live_score(history_rev)
+
+# Consensus confidence level — use the lesser of the two scored counts
+min_n     = min(exp_n, rev_n)
+con_level = consensus_label(min_n)
+
+# ── SIGNAL PANEL ──────────────────────────────────────────────────────────────
 has_exp = bool(signal_exp)
 has_rev = bool(signal_rev)
 
@@ -273,7 +336,6 @@ if has_exp or has_rev:
     if has_exp and has_rev:
         exp_etf = signal_exp.get('signal')
         rev_etf = signal_rev.get('signal')
-        agree   = exp_etf == rev_etf
 
         col_e, col_r, col_c = st.columns(3)
         with col_e:
@@ -282,19 +344,50 @@ if has_exp or has_rev:
         with col_r:
             st.markdown(signal_card(signal_rev, "REVERSE SIGNAL", '#FF9800'),
                         unsafe_allow_html=True)
+
         with col_c:
-            if agree:
-                c, etf = '#00E676', exp_etf
-                lbl    = "✅ CONSENSUS — HIGH CONVICTION"
-                conf   = max(signal_exp.get('confidence', 0),
-                             signal_rev.get('confidence', 0))
-                body   = f"{conf:.1%} confidence"
-                desc   = ETF_DESC.get(etf, '')
-            else:
-                c, etf = '#FF5252', '—'
-                lbl    = "⚠️ NO CONSENSUS — HOLD CASH"
-                body   = "Models disagree"
+            # ── Weighted consensus logic ──────────────────────────────────────
+            if con_level is None:
+                # Bootstrap — not enough history yet
+                c      = '#78909C'
+                etf    = '—'
+                lbl    = f"⏳ BUILDING HISTORY ({min_n}/{MIN_DAYS_PROVISIONAL} days)"
+                body   = "Need 5+ scored days for consensus"
                 desc   = f"Expanding→{exp_etf} | Reverse→{rev_etf}"
+
+            elif exp_score is not None and rev_score is not None:
+                # Enough history — weighted score decides winner
+                if exp_score >= rev_score:
+                    winner_etf   = exp_etf
+                    winner_label = "EXPANDING"
+                    score_gap    = exp_score - rev_score
+                else:
+                    winner_etf   = rev_etf
+                    winner_label = "REVERSE"
+                    score_gap    = rev_score - exp_score
+
+                conf_tag = {"provisional": "⚠️ PROVISIONAL",
+                            "moderate":    "🔶 MODERATE",
+                            "full":        "✅ HIGH CONVICTION"}[con_level]
+
+                c    = COLORS.get(winner_etf, '#E91E63')
+                etf  = winner_etf
+                lbl  = f"{conf_tag} CONSENSUS ({min_n} days)"
+                desc = ETF_DESC.get(winner_etf, '')
+                body = (f"{winner_label} wins | "
+                        f"Score gap: {score_gap:.4f}")
+            else:
+                # Fallback — agree/disagree simple logic
+                if exp_etf == rev_etf:
+                    c, etf = '#00E676', exp_etf
+                    lbl    = "✅ CONSENSUS (no history yet)"
+                    body   = "Both models agree"
+                    desc   = ETF_DESC.get(etf, '')
+                else:
+                    c, etf = '#FF5252', exp_etf
+                    lbl    = "⚠️ NO HISTORY — USING EXPANDING"
+                    body   = f"Expanding→{exp_etf} | Reverse→{rev_etf}"
+                    desc   = ETF_DESC.get(exp_etf, '')
 
             st.markdown(f"""
             <div style="background:linear-gradient(135deg,{c}22,{c}44);
@@ -304,9 +397,28 @@ if has_exp or has_rev:
                 <div style="font-size:44px;font-weight:900;color:{c};
                             letter-spacing:2px;">{etf}</div>
                 <div style="font-size:13px;color:#ccc;margin-top:4px;">{desc}</div>
-                <div style="font-size:18px;font-weight:700;color:{c};
+                <div style="font-size:14px;font-weight:600;color:{c};
                             margin-top:8px;">{body}</div>
             </div>""", unsafe_allow_html=True)
+
+            # Score breakdown expander
+            if con_level is not None and exp_score is not None:
+                with st.expander("📊 Score breakdown"):
+                    sc1, sc2 = st.columns(2)
+                    with sc1:
+                        st.markdown("**Expanding**")
+                        st.markdown(f"Score: `{exp_score:.4f}`")
+                        st.markdown(f"Avg daily excess: `{exp_avg_exc:+.3%}`")
+                        st.markdown(f"Live Sharpe: `{exp_sharpe:.3f}`")
+                        st.markdown(f"Live Max DD: `{exp_max_dd:.2%}`")
+                        st.markdown(f"Scored days: `{exp_n}`")
+                    with sc2:
+                        st.markdown("**Reverse**")
+                        st.markdown(f"Score: `{rev_score:.4f}`")
+                        st.markdown(f"Avg daily excess: `{rev_avg_exc:+.3%}`")
+                        st.markdown(f"Live Sharpe: `{rev_sharpe:.3f}`")
+                        st.markdown(f"Live Max DD: `{rev_max_dd:.2%}`")
+                        st.markdown(f"Scored days: `{rev_n}`")
 
     elif has_exp:
         col1, col2 = st.columns([1, 2])
