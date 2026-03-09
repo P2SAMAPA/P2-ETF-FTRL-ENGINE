@@ -86,7 +86,7 @@ def score_yesterday(prev_signal: dict, prices: pd.DataFrame,
 
     try:
         # Find the trading day after the signal date
-        signal_dt  = pd.Timestamp(signal_date)
+        signal_dt   = pd.Timestamp(signal_date)
         future_days = prices.index[prices.index > signal_dt]
 
         if len(future_days) == 0:
@@ -108,9 +108,9 @@ def score_yesterday(prev_signal: dict, prices: pd.DataFrame,
                for v in [etf_prev, etf_next, agg_prev, agg_next]):
             return None
 
-        etf_return  = float(etf_next / etf_prev - 1)
-        agg_return  = float(agg_next / agg_prev - 1)
-        beats       = etf_return > agg_return
+        etf_return = float(etf_next / etf_prev - 1)
+        agg_return = float(agg_next / agg_prev - 1)
+        beats      = etf_return > agg_return
 
         scored = {
             **prev_signal,
@@ -144,7 +144,7 @@ def train_full(prices: pd.DataFrame) -> DDPGTrainer:
     from features import compute_features, build_price_matrices, normalise_features
 
     # Features
-    feat = compute_features(prices)                    # (T, C, W)
+    feat = compute_features(prices)                        # (T, C, W)
 
     # Normalise using full dataset stats (no test split here)
     mean = feat.mean(axis=(0, 2), keepdims=True)
@@ -153,7 +153,7 @@ def train_full(prices: pd.DataFrame) -> DDPGTrainer:
     feat = ((feat - mean) / std).astype(np.float32)
 
     from features import build_price_matrices
-    matrices = build_price_matrices(feat)              # (N, C, H, W)
+    matrices = build_price_matrices(feat)                  # (N, C, H, W)
     returns  = PortfolioEnv.compute_daily_returns(prices)  # (T-1, W)
 
     n = min(len(matrices), len(returns))
@@ -162,7 +162,12 @@ def train_full(prices: pd.DataFrame) -> DDPGTrainer:
 
     print(f"[Train] matrices={matrices.shape} returns={returns.shape}")
 
-    env     = PortfolioEnv(matrices, returns)
+    env = PortfolioEnv(matrices, returns)
+
+    # Cap predict runs at 30 epochs — full 50 is too slow on 4500+ day dataset.
+    # Early stopping patience (10) unchanged so model can still bail early.
+    cfg.MAX_EPOCHS = 30
+
     trainer = DDPGTrainer(window_id=0)   # window_id=0 = full dataset run
 
     checkpoint_dir = "/tmp/ftrl_predict"
@@ -180,14 +185,13 @@ def get_signal(trainer: DDPGTrainer, feat: np.ndarray) -> dict:
     Run actor on the latest H-day window.
     Returns winner-takes-all signal dict.
     """
-    # Latest window = last H rows of features
     H = cfg.H
     if feat.shape[0] < H:
         raise ValueError(f"Not enough data for lookback: {feat.shape[0]} < {H}")
 
-    latest_window = feat[-H:]                          # (H, C, W)
-    matrix = latest_window.transpose(1, 0, 2)         # (C, H, W)
-    matrix_t = torch.FloatTensor(matrix).unsqueeze(0) # (1, C, H, W)
+    latest_window = feat[-H:]                            # (H, C, W)
+    matrix        = latest_window.transpose(1, 0, 2)    # (C, H, W)
+    matrix_t      = torch.FloatTensor(matrix).unsqueeze(0)  # (1, C, H, W)
 
     # Equal weight starting point
     prev_weights = torch.ones(1, cfg.W) / cfg.W
@@ -196,8 +200,8 @@ def get_signal(trainer: DDPGTrainer, feat: np.ndarray) -> dict:
         weights = trainer.actor(matrix_t, prev_weights).squeeze(0).numpy()
 
     # Winner-takes-all
-    best_idx  = int(np.argmax(weights))
-    signal    = cfg.ASSETS[best_idx]
+    best_idx   = int(np.argmax(weights))
+    signal     = cfg.ASSETS[best_idx]
     confidence = float(weights[best_idx])
 
     raw_weights = {cfg.ASSETS[i]: round(float(weights[i]), 6)
