@@ -296,9 +296,10 @@ if has_exp or has_rev:
                 st.markdown("**Raw Model Weights**")
                 for etf, w in sorted(rw.items(), key=lambda x: x[1], reverse=True):
                     prefix = "🏆 " if etf == signal_exp.get('signal') else "   "
+                    etf_color = COLORS.get(etf, '#888')
                     st.markdown(
                         f"{prefix}**`{etf}`** "
-                        f"<span style='color:{COLORS.get(etf,\"#888\")}'>{w:.1%}</span>",
+                        f"<span style='color:{etf_color}'>{w:.1%}</span>",
                         unsafe_allow_html=True)
                     st.progress(float(w))
 
