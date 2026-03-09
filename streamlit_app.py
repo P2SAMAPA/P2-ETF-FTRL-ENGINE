@@ -89,6 +89,28 @@ def load_all_daily() -> pd.DataFrame:
     return pd.concat(frames).sort_index() if frames else pd.DataFrame()
 
 
+@st.cache_data(ttl=3600)
+def load_reverse_window_daily(window_id: int) -> pd.DataFrame:
+    try:
+        path = hf_hub_download(repo_id=HF_REPO,
+            filename=f"results/reverse_window_{window_id:02d}_daily.csv",
+            repo_type="dataset")
+        return pd.read_csv(path, parse_dates=['date'], index_col='date')
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=3600)
+def load_all_reverse_daily() -> pd.DataFrame:
+    frames = []
+    for w_id in range(1, 15):
+        df = load_reverse_window_daily(w_id)
+        if not df.empty:
+            df['window_id'] = w_id
+            frames.append(df)
+    return pd.concat(frames).sort_index() if frames else pd.DataFrame()
+
+
 @st.cache_data(ttl=300)
 def load_latest_signal() -> dict:
     try:
@@ -233,6 +255,7 @@ st.caption("Financial Transformer Reinforcement Learning | Walk-Forward Back-tes
 summary_df         = load_summary()
 reverse_summary_df = load_reverse_summary()
 all_daily          = load_all_daily()
+all_reverse_daily  = load_all_reverse_daily()
 signal_exp         = load_latest_signal()
 signal_rev         = load_latest_reverse_signal()
 history_exp        = load_signal_history()
@@ -563,6 +586,7 @@ with tab4:
             st.plotly_chart(fig2, use_container_width=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════
 # TAB 5: REVERSE WINDOWS
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab5:
@@ -572,8 +596,7 @@ with tab5:
 
     if reverse_summary_df.empty:
         st.info("Reverse window training not yet run. "
-                "Go to Actions → Train FTRL Reverse Windows → "
-                "Run workflow → all")
+                "Go to Actions → Train FTRL Reverse Windows → Run workflow → all")
     else:
         n_rev = len(reverse_summary_df)
         st.markdown(f"**{n_rev}/14 reverse windows complete**")
@@ -588,54 +611,252 @@ with tab5:
                 f"Sharpe: {best['ftrl_sharpe']:.3f}"
             )
 
-        show_cols = ['window_id','label','ftrl_total_return',
-                     'agg_total_return','excess_return',
-                     'ftrl_sharpe','ftrl_max_drawdown']
-        if 'n_test_days' in reverse_summary_df.columns:
-            show_cols.append('n_test_days')
-        disp = reverse_summary_df[
-            [c for c in show_cols if c in reverse_summary_df.columns]
-        ].copy()
-        rename = {'window_id':'Window','label':'Label',
-                  'ftrl_total_return':'FTRL Return',
-                  'agg_total_return':'AGG Return',
-                  'excess_return':'Excess','ftrl_sharpe':'Sharpe',
-                  'ftrl_max_drawdown':'MaxDD','n_test_days':'Test Days'}
-        disp = disp.rename(columns=rename)
-        for col in ['FTRL Return','AGG Return','Excess','MaxDD']:
-            if col in disp.columns:
-                disp[col] = disp[col].apply(lambda x: f"{x*100:+.2f}%")
-        if 'Sharpe' in disp.columns:
-            disp['Sharpe'] = disp['Sharpe'].apply(lambda x: f"{x:.3f}")
-        st.dataframe(disp, use_container_width=True, hide_index=True)
+        # ── Sub-tabs mirroring Phase 1 ─────────────────────────────────────────
+        rev_t1, rev_t2, rev_t3, rev_t4 = st.tabs([
+            "📊 Summary", "📈 Equity Curves", "⚖️ Weights", "🔍 Window Detail"
+        ])
 
-        if 'excess_return' in reverse_summary_df.columns:
-            bar_c = ['#00C853' if v > 0 else '#FF1744'
-                     for v in reverse_summary_df['excess_return']]
-            labels = (reverse_summary_df['label'].tolist()
-                      if 'label' in reverse_summary_df.columns
-                      else reverse_summary_df['window_id'].apply(
-                          lambda x: f"R{x}").tolist())
-            fig = go.Figure()
-            fig.add_bar(
-                x=reverse_summary_df['window_id'].apply(lambda x: f"R{x:02d}"),
-                y=reverse_summary_df['excess_return'] * 100,
-                marker_color=bar_c, text=labels,
-                hovertemplate='%{text}<br>Excess: %{y:.2f}%<extra></extra>',
-            )
-            fig.add_hline(y=0, line_dash='dash',
-                          line_color='white', opacity=0.4)
-            fig.update_layout(
-                template='plotly_dark', height=400,
-                title='Excess Return vs AGG by Training Start Year',
-                xaxis_title='Reverse Window (R01=2008, R14=2021)',
-                yaxis_title='Excess Return (%)',
-            )
-            st.plotly_chart(fig, use_container_width=True)
-            st.caption(
-                "If R08 (starting 2015) outperforms R01 (starting 2008), "
-                "pre-2015 data adds noise rather than signal for recent regimes."
-            )
+        # ── SUB-TAB 1: Summary ─────────────────────────────────────────────────
+        with rev_t1:
+            show_cols = ['window_id','label','ftrl_total_return',
+                         'agg_total_return','excess_return',
+                         'ftrl_sharpe','ftrl_max_drawdown']
+            if 'n_test_days' in reverse_summary_df.columns:
+                show_cols.append('n_test_days')
+            disp = reverse_summary_df[
+                [c for c in show_cols if c in reverse_summary_df.columns]
+            ].copy()
+            rename = {'window_id':'Window','label':'Label',
+                      'ftrl_total_return':'FTRL Return',
+                      'agg_total_return':'AGG Return',
+                      'excess_return':'Excess','ftrl_sharpe':'Sharpe',
+                      'ftrl_max_drawdown':'MaxDD','n_test_days':'Test Days'}
+            disp = disp.rename(columns=rename)
+            for col in ['FTRL Return','AGG Return','Excess','MaxDD']:
+                if col in disp.columns:
+                    disp[col] = disp[col].apply(lambda x: f"{x*100:+.2f}%")
+            if 'Sharpe' in disp.columns:
+                disp['Sharpe'] = disp['Sharpe'].apply(lambda x: f"{x:.3f}")
+            st.dataframe(disp, use_container_width=True, hide_index=True)
+
+            if 'excess_return' in reverse_summary_df.columns:
+                bar_c  = ['#00C853' if v > 0 else '#FF1744'
+                           for v in reverse_summary_df['excess_return']]
+                labels = (reverse_summary_df['label'].tolist()
+                          if 'label' in reverse_summary_df.columns
+                          else reverse_summary_df['window_id'].apply(
+                              lambda x: f"R{x}").tolist())
+                fig = go.Figure()
+                fig.add_bar(
+                    x=reverse_summary_df['window_id'].apply(lambda x: f"R{x:02d}"),
+                    y=reverse_summary_df['excess_return'] * 100,
+                    marker_color=bar_c, text=labels,
+                    hovertemplate='%{text}<br>Excess: %{y:.2f}%<extra></extra>',
+                )
+                fig.add_hline(y=0, line_dash='dash',
+                              line_color='white', opacity=0.4)
+                fig.update_layout(
+                    template='plotly_dark', height=400,
+                    title='Excess Return vs AGG by Training Start Year',
+                    xaxis_title='Reverse Window (R01=starts 2008 → R14=starts 2021)',
+                    yaxis_title='Excess Return (%)',
+                )
+                st.plotly_chart(fig, use_container_width=True)
+                st.caption(
+                    "Peak performance window = optimal training lookback. "
+                    "Declining performance toward R14 means older data still helps."
+                )
+
+        # ── SUB-TAB 2: Equity Curves ───────────────────────────────────────────
+        with rev_t2:
+            st.subheader("Cumulative Portfolio Value — All Reverse Windows")
+            if all_reverse_daily.empty:
+                st.info("Daily data not yet available — run reverse window training first.")
+            else:
+                fig = go.Figure()
+                for w_id in sorted(all_reverse_daily['window_id'].unique()):
+                    w_df  = all_reverse_daily[all_reverse_daily['window_id'] == w_id]
+                    curve = build_equity_curve(w_df)
+                    row   = reverse_summary_df[reverse_summary_df['window_id'] == w_id]
+                    label = row['label'].values[0] if len(row) > 0 else f"R{w_id}"
+                    exc   = row['excess_return'].values[0] if len(row) > 0 else 0
+                    color = '#00C853' if exc > 0 else '#FF1744'
+                    fig.add_scatter(x=w_df.index, y=curve, mode='lines',
+                                    name=label,
+                                    line=dict(color=color, width=1.5),
+                                    opacity=0.75)
+                fig.add_hline(y=1.0, line_dash='dash',
+                              line_color='white', opacity=0.3,
+                              annotation_text='Start')
+                fig.update_layout(template='plotly_dark', height=500,
+                                  yaxis_title='Portfolio Value (normalised to 1.0)',
+                                  xaxis_title='Date',
+                                  legend=dict(x=1.01, y=1))
+                st.plotly_chart(fig, use_container_width=True)
+                st.caption("Green = beats AGG | Red = trails AGG | "
+                           "Test period: 2025-01-01 → present")
+
+                st.subheader("Rolling 60-Day Sharpe")
+                fig2 = go.Figure()
+                for w_id in sorted(all_reverse_daily['window_id'].unique()):
+                    w_df  = all_reverse_daily[all_reverse_daily['window_id'] == w_id]
+                    row   = reverse_summary_df[reverse_summary_df['window_id'] == w_id]
+                    label = row['label'].values[0] if len(row) > 0 else f"R{w_id}"
+                    fig2.add_scatter(x=w_df.index,
+                                     y=compute_rolling_sharpe(w_df['net_return']),
+                                     mode='lines', name=label,
+                                     line=dict(width=1.5))
+                fig2.add_hline(y=0, line_dash='dash',
+                               line_color='white', opacity=0.3)
+                fig2.update_layout(template='plotly_dark', height=400,
+                                   yaxis_title='Rolling Sharpe',
+                                   xaxis_title='Date')
+                st.plotly_chart(fig2, use_container_width=True)
+
+        # ── SUB-TAB 3: Weights ─────────────────────────────────────────────────
+        with rev_t3:
+            st.subheader("Average Portfolio Weight Allocation — Reverse Windows")
+            if all_reverse_daily.empty:
+                st.info("Daily data not yet available.")
+            else:
+                weight_cols = [f'w_{a}' for a in ASSETS
+                               if f'w_{a}' in all_reverse_daily.columns]
+                if weight_cols:
+                    rows = []
+                    for w_id in sorted(all_reverse_daily['window_id'].unique()):
+                        w_df = all_reverse_daily[all_reverse_daily['window_id'] == w_id]
+                        row_s = reverse_summary_df[
+                            reverse_summary_df['window_id'] == w_id]
+                        label = row_s['label'].values[0] if len(row_s) > 0 else f"R{w_id}"
+                        row   = {'label': label}
+                        for col in weight_cols:
+                            row[col.replace('w_', '')] = w_df[col].mean()
+                        rows.append(row)
+                    wt_df = pd.DataFrame(rows)
+
+                    fig = go.Figure()
+                    for asset in ASSETS:
+                        if asset in wt_df.columns:
+                            fig.add_bar(x=wt_df['label'], y=wt_df[asset],
+                                        name=asset,
+                                        marker_color=COLORS.get(asset, '#888'))
+                    fig.update_layout(barmode='stack', template='plotly_dark',
+                                      height=400,
+                                      xaxis_title='Reverse Window',
+                                      yaxis_title='Average Weight',
+                                      yaxis=dict(range=[0, 1]))
+                    st.plotly_chart(fig, use_container_width=True)
+
+                    # Time series weights for selected window
+                    available_rev = [
+                        (w_id, reverse_summary_df[
+                            reverse_summary_df['window_id'] == w_id]['label'].values[0])
+                        for w_id in sorted(all_reverse_daily['window_id'].unique())
+                        if len(reverse_summary_df[
+                            reverse_summary_df['window_id'] == w_id]) > 0
+                    ]
+                    if available_rev:
+                        sel_label = st.selectbox(
+                            "Select Reverse Window",
+                            [lbl for _, lbl in available_rev],
+                            key='rev_weight_sel'
+                        )
+                        sel_wid = next(w for w, lbl in available_rev
+                                       if lbl == sel_label)
+                        sel_df  = all_reverse_daily[
+                            all_reverse_daily['window_id'] == sel_wid]
+                        fig3 = go.Figure()
+                        for col in weight_cols:
+                            fig3.add_scatter(
+                                x=sel_df.index, y=sel_df[col],
+                                mode='lines',
+                                name=col.replace('w_', ''),
+                                stackgroup='one',
+                                line=dict(color=COLORS.get(
+                                    col.replace('w_', ''), '#888')))
+                        fig3.update_layout(template='plotly_dark', height=400,
+                                           yaxis_title='Weight',
+                                           yaxis=dict(range=[0, 1]))
+                        st.plotly_chart(fig3, use_container_width=True)
+
+        # ── SUB-TAB 4: Window Detail ───────────────────────────────────────────
+        with rev_t4:
+            st.subheader("Individual Reverse Window Analysis")
+            if all_reverse_daily.empty:
+                st.info("Daily data not yet available.")
+            else:
+                available_rev2 = [
+                    (w_id, reverse_summary_df[
+                        reverse_summary_df['window_id'] == w_id]['label'].values[0])
+                    for w_id in sorted(all_reverse_daily['window_id'].unique())
+                    if len(reverse_summary_df[
+                        reverse_summary_df['window_id'] == w_id]) > 0
+                ]
+                if available_rev2:
+                    sel_label2 = st.selectbox(
+                        "Select Reverse Window",
+                        [lbl for _, lbl in available_rev2],
+                        key='rev_detail_sel'
+                    )
+                    sel_wid2 = next(w for w, lbl in available_rev2
+                                    if lbl == sel_label2)
+                    row2     = reverse_summary_df[
+                        reverse_summary_df['window_id'] == sel_wid2].iloc[0]
+                    wd2      = load_reverse_window_daily(sel_wid2)
+
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("FTRL Return",
+                              f"{row2['ftrl_total_return']*100:+.2f}%",
+                              f"{row2['excess_return']*100:+.2f}% vs AGG")
+                    c2.metric("AGG Return",
+                              f"{row2['agg_total_return']*100:+.2f}%")
+                    c3.metric("FTRL Sharpe",
+                              f"{row2['ftrl_sharpe']:.3f}")
+                    c4.metric("Max Drawdown",
+                              f"{row2['ftrl_max_drawdown']*100:+.2f}%")
+
+                    if not wd2.empty:
+                        curve2 = build_equity_curve(wd2)
+                        fig4   = go.Figure()
+                        fig4.add_scatter(x=wd2.index, y=curve2, mode='lines',
+                                         name='FTRL',
+                                         line=dict(color=COLORS['FTRL'], width=2))
+                        fig4.add_hline(y=1.0, line_dash='dash',
+                                       line_color='white', opacity=0.4)
+                        fig4.update_layout(
+                            template='plotly_dark', height=350,
+                            title=f"Equity Curve — {sel_label2}",
+                            yaxis_title='Portfolio Value')
+                        st.plotly_chart(fig4, use_container_width=True)
+
+                        peak2 = curve2.cummax()
+                        dd2   = (curve2 - peak2) / peak2
+                        fig5  = go.Figure()
+                        fig5.add_scatter(x=wd2.index, y=dd2*100,
+                                         mode='lines', fill='tozeroy',
+                                         line=dict(color='#FF1744', width=1))
+                        fig5.update_layout(template='plotly_dark', height=250,
+                                           title='Drawdown (%)',
+                                           yaxis_title='%')
+                        st.plotly_chart(fig5, use_container_width=True)
+
+                        # Weight breakdown for this window
+                        weight_cols2 = [f'w_{a}' for a in ASSETS
+                                        if f'w_{a}' in wd2.columns]
+                        if weight_cols2:
+                            st.subheader("Weight Allocation Over Test Period")
+                            fig6 = go.Figure()
+                            for col in weight_cols2:
+                                fig6.add_scatter(
+                                    x=wd2.index, y=wd2[col],
+                                    mode='lines',
+                                    name=col.replace('w_', ''),
+                                    stackgroup='one',
+                                    line=dict(color=COLORS.get(
+                                        col.replace('w_', ''), '#888')))
+                            fig6.update_layout(template='plotly_dark', height=300,
+                                               yaxis=dict(range=[0, 1]))
+                            st.plotly_chart(fig6, use_container_width=True)
 
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.divider()
