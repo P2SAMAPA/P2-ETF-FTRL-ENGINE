@@ -7,10 +7,8 @@ import pandas as pd
 import numpy as np
 import json
 import os
-from pathlib import Path
-from huggingface_hub import hf_hub_download, list_repo_files
+from huggingface_hub import hf_hub_download
 import plotly.graph_objects as go
-import plotly.express as px
 from plotly.subplots import make_subplots
 
 # ── Page config ───────────────────────────────────────────────────────────────
@@ -21,13 +19,22 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-HF_REPO   = "P2SAMAPA/p2-etf-ftrl-engine"
-ASSETS    = ['TLT', 'LQD', 'HYG', 'VNQ', 'GLD', 'SLV']
-COLORS    = {
+HF_REPO = "P2SAMAPA/p2-etf-ftrl-engine"
+ASSETS  = ['TLT', 'LQD', 'HYG', 'VNQ', 'GLD', 'SLV']
+COLORS  = {
     'TLT': '#2196F3', 'LQD': '#4CAF50', 'HYG': '#FF9800',
     'VNQ': '#9C27B0', 'GLD': '#FFD700', 'SLV': '#90A4AE',
     'FTRL': '#E91E63', 'AGG': '#607D8B'
 }
+ETF_DESC = {
+    'TLT': 'Long-duration US Treasuries',
+    'LQD': 'Investment Grade Corporate Bonds',
+    'HYG': 'High Yield Corporate Bonds',
+    'VNQ': 'US Real Estate (REITs)',
+    'GLD': 'Gold',
+    'SLV': 'Silver',
+}
+
 
 # ── Data loading ──────────────────────────────────────────────────────────────
 @st.cache_data(ttl=3600)
@@ -48,7 +55,6 @@ def load_summary() -> pd.DataFrame:
     if not frames:
         return pd.DataFrame()
     df = pd.DataFrame(frames)
-    # Normalise column names from train.py output
     df = df.rename(columns={
         'ftrl_total_return': 'ftrl_return',
         'agg_total_return':  'agg_return',
@@ -76,7 +82,6 @@ def load_window_daily(window_id: int) -> pd.DataFrame:
 
 @st.cache_data(ttl=3600)
 def load_all_daily() -> pd.DataFrame:
-    """Load and concatenate all available window daily results."""
     frames = []
     for w_id in range(1, 15):
         df = load_window_daily(w_id)
@@ -88,20 +93,47 @@ def load_all_daily() -> pd.DataFrame:
     return pd.DataFrame()
 
 
+@st.cache_data(ttl=300)   # 5 min cache — refresh more frequently for signal
+def load_latest_signal() -> dict:
+    try:
+        path = hf_hub_download(
+            repo_id=HF_REPO,
+            filename="results/latest_signal.json",
+            repo_type="dataset",
+            force_download=True,
+        )
+        with open(path) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+@st.cache_data(ttl=300)
+def load_signal_history() -> pd.DataFrame:
+    try:
+        path = hf_hub_download(
+            repo_id=HF_REPO,
+            filename="results/signal_history.json",
+            repo_type="dataset",
+            force_download=True,
+        )
+        with open(path) as f:
+            data = json.load(f)
+        if not data:
+            return pd.DataFrame()
+        df = pd.DataFrame(data)
+        df['date'] = pd.to_datetime(df['date'])
+        df = df.sort_values('date', ascending=False).reset_index(drop=True)
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
 # ── Helper functions ──────────────────────────────────────────────────────────
-def format_pct(val):
-    if pd.isna(val):
-        return "—"
-    color = "green" if val > 0 else "red"
-    return f":{color}[{val*100:+.2f}%]"
-
-
 def build_equity_curve(daily_df: pd.DataFrame) -> pd.Series:
-    """Build normalised equity curve from net_return column."""
     if 'net_return' not in daily_df.columns:
         return pd.Series()
-    curve = (1 + daily_df['net_return']).cumprod()
-    return curve
+    return (1 + daily_df['net_return']).cumprod()
 
 
 def compute_rolling_sharpe(returns: pd.Series, window: int = 60) -> pd.Series:
@@ -136,18 +168,149 @@ with st.sidebar:
 st.title("📈 FTRL ETF Portfolio Engine")
 st.caption("Financial Transformer Reinforcement Learning | Walk-Forward Back-test vs AGG")
 
-# Load data
-summary_df = load_summary()
-all_daily  = load_all_daily()
+# Load all data
+summary_df     = load_summary()
+all_daily      = load_all_daily()
+latest_signal  = load_latest_signal()
+signal_history = load_signal_history()
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# TODAY'S SIGNAL — always shown at top if available
+# ═══════════════════════════════════════════════════════════════════════════════
+if latest_signal:
+    signal_etf  = latest_signal.get('signal', '—')
+    confidence  = latest_signal.get('confidence', 0)
+    signal_date = latest_signal.get('date', '—')
+    raw_weights = latest_signal.get('raw_weights', {})
+
+    st.markdown("---")
+    sig_col1, sig_col2, sig_col3 = st.columns([2, 2, 3])
+
+    with sig_col1:
+        etf_color = COLORS.get(signal_etf, '#E91E63')
+        st.markdown(f"""
+        <div style="
+            background: linear-gradient(135deg, {etf_color}22, {etf_color}44);
+            border: 2px solid {etf_color};
+            border-radius: 12px;
+            padding: 20px 24px;
+            text-align: center;
+        ">
+            <div style="font-size:13px; color:#aaa; margin-bottom:4px;">
+                TODAY'S SIGNAL · {signal_date}
+            </div>
+            <div style="font-size:48px; font-weight:900; color:{etf_color}; 
+                        letter-spacing:2px;">
+                {signal_etf}
+            </div>
+            <div style="font-size:14px; color:#ccc; margin-top:4px;">
+                {ETF_DESC.get(signal_etf, '')}
+            </div>
+            <div style="font-size:20px; font-weight:700; color:{etf_color}; 
+                        margin-top:8px;">
+                {confidence:.1%} confidence
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with sig_col2:
+        st.markdown("**Raw Model Weights**")
+        if raw_weights:
+            sorted_weights = sorted(raw_weights.items(),
+                                    key=lambda x: x[1], reverse=True)
+            for etf, w in sorted_weights:
+                bar_color = COLORS.get(etf, '#888')
+                is_winner = etf == signal_etf
+                prefix = "🏆 " if is_winner else "   "
+                st.markdown(
+                    f"{prefix}**`{etf}`** "
+                    f"{'&nbsp;' * 2}"
+                    f"<span style='color:{bar_color}'>{w:.1%}</span>",
+                    unsafe_allow_html=True
+                )
+                st.progress(float(w))
+
+    with sig_col3:
+        # Weight donut chart
+        if raw_weights:
+            labels = list(raw_weights.keys())
+            values = list(raw_weights.values())
+            colors = [COLORS.get(l, '#888') for l in labels]
+
+            fig_donut = go.Figure(go.Pie(
+                labels=labels,
+                values=values,
+                hole=0.55,
+                marker_colors=colors,
+                textinfo='label+percent',
+                hovertemplate='%{label}: %{value:.1%}<extra></extra>',
+            ))
+            fig_donut.update_layout(
+                template='plotly_dark',
+                height=220,
+                margin=dict(t=10, b=10, l=10, r=10),
+                showlegend=False,
+                annotations=[dict(
+                    text=f'<b>{signal_etf}</b>',
+                    x=0.5, y=0.5,
+                    font_size=20,
+                    font_color=COLORS.get(signal_etf, 'white'),
+                    showarrow=False
+                )]
+            )
+            st.plotly_chart(fig_donut, use_container_width=True)
+
+    st.markdown("---")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 15-DAY AUDIT TRAIL
+# ═══════════════════════════════════════════════════════════════════════════════
+if not signal_history.empty:
+    st.subheader("📋 Signal Audit Trail — Last 15 Days")
+
+    display_hist = signal_history.head(15).copy()
+
+    # Format columns
+    display_hist['Date']           = display_hist['date'].dt.strftime('%Y-%m-%d')
+    display_hist['Signal']         = display_hist['signal']
+    display_hist['Confidence']     = display_hist['confidence'].apply(
+                                        lambda x: f"{x:.1%}" if pd.notna(x) else "—")
+    display_hist['Actual Return']  = display_hist['actual_return'].apply(
+                                        lambda x: f"{x:+.2%}" if pd.notna(x) else "Pending")
+    display_hist['vs AGG']         = display_hist['excess_return'].apply(
+                                        lambda x: f"{x:+.2%}" if pd.notna(x) else "Pending")
+    display_hist['Result']         = display_hist['beats_agg'].apply(
+                                        lambda x: "✓" if x is True else
+                                                  ("✗" if x is False else "⏳"))
+
+    audit_display = display_hist[[
+        'Date', 'Signal', 'Confidence', 'Actual Return', 'vs AGG', 'Result'
+    ]]
+
+    # Compute hit rate from scored records
+    scored = signal_history[signal_history['beats_agg'].notna()]
+    if not scored.empty:
+        hit_rate = scored['beats_agg'].mean()
+        avg_excess = scored['excess_return'].mean()
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Signal Hit Rate", f"{hit_rate:.0%}",
+                  f"{int(scored['beats_agg'].sum())}/{len(scored)} scored")
+        c2.metric("Avg Daily Excess vs AGG",
+                  f"{avg_excess:+.2%}")
+        c3.metric("Signals Generated", str(len(signal_history)))
+
+    st.dataframe(audit_display, use_container_width=True, hide_index=True)
+    st.markdown("---")
+
+# ── No backtest data yet ──────────────────────────────────────────────────────
 if summary_df.empty:
-    st.info("⏳ No results yet. Training is in progress. "
-            "Check back after the first GitHub Actions run completes.")
+    st.info("⏳ Back-test results not yet available. "
+            "Training is in progress via GitHub Actions.")
     st.markdown("""
     **Pipeline status:**
     - Data source: `P2SAMAPA/p2-etf-deepwave-dl`
     - Output repo: `P2SAMAPA/p2-etf-ftrl-engine`
-    - Training: GitHub Actions (one window per run)
+    - Training: GitHub Actions (14 parallel windows)
     - Results appear here as each window completes
     """)
     st.stop()
@@ -164,14 +327,13 @@ with tab1:
     n_complete = len(summary_df)
     st.subheader(f"Walk-Forward Results — {n_complete}/14 Windows Complete")
 
-    # ── Top KPIs ──────────────────────────────────────────────────────────────
     col1, col2, col3, col4, col5 = st.columns(5)
 
-    avg_ftrl_ret  = summary_df['ftrl_return'].mean()
-    avg_agg_ret   = summary_df['agg_return'].mean()
-    avg_excess    = summary_df['excess_return'].mean()
-    win_rate      = summary_df['beats_benchmark'].mean()
-    avg_sharpe    = summary_df['ftrl_sharpe'].mean()
+    avg_ftrl_ret = summary_df['ftrl_return'].mean()
+    avg_agg_ret  = summary_df['agg_return'].mean()
+    avg_excess   = summary_df['excess_return'].mean()
+    win_rate     = summary_df['beats_benchmark'].mean()
+    avg_sharpe   = summary_df['ftrl_sharpe'].mean()
 
     col1.metric("Avg Annual Return", f"{avg_ftrl_ret*100:.2f}%",
                 f"{avg_excess*100:+.2f}% vs AGG")
@@ -182,8 +344,6 @@ with tab1:
     col5.metric("Windows Done",      f"{n_complete}/14")
 
     st.divider()
-
-    # ── Summary table ─────────────────────────────────────────────────────────
     st.subheader("Year-by-Year Performance")
 
     display_df = summary_df[[
@@ -200,32 +360,23 @@ with tab1:
     pct_cols = ['FTRL Return', 'AGG Return', 'Excess', 'FTRL MaxDD', 'AGG MaxDD']
     for col in pct_cols:
         display_df[col] = display_df[col].apply(lambda x: f"{x*100:+.2f}%")
-
     for col in ['FTRL Sharpe', 'AGG Sharpe']:
         display_df[col] = display_df[col].apply(lambda x: f"{x:.3f}")
-
     display_df['Beats'] = display_df['Beats'].apply(lambda x: "✓" if x else "✗")
 
     st.dataframe(display_df, use_container_width=True, hide_index=True)
 
-    # ── Bar chart: FTRL vs AGG returns ────────────────────────────────────────
     st.subheader("Annual Returns: FTRL vs AGG")
     fig = go.Figure()
-    fig.add_bar(
-        x=summary_df['test_year'].astype(str),
-        y=summary_df['ftrl_return'] * 100,
-        name='FTRL', marker_color=COLORS['FTRL']
-    )
-    fig.add_bar(
-        x=summary_df['test_year'].astype(str),
-        y=summary_df['agg_return'] * 100,
-        name='AGG', marker_color=COLORS['AGG']
-    )
-    fig.update_layout(
-        barmode='group', template='plotly_dark',
-        yaxis_title='Return (%)', xaxis_title='Test Year',
-        height=400, legend=dict(x=0.01, y=0.99)
-    )
+    fig.add_bar(x=summary_df['test_year'].astype(str),
+                y=summary_df['ftrl_return'] * 100,
+                name='FTRL', marker_color=COLORS['FTRL'])
+    fig.add_bar(x=summary_df['test_year'].astype(str),
+                y=summary_df['agg_return'] * 100,
+                name='AGG', marker_color=COLORS['AGG'])
+    fig.update_layout(barmode='group', template='plotly_dark',
+                      yaxis_title='Return (%)', xaxis_title='Test Year',
+                      height=400, legend=dict(x=0.01, y=0.99))
     st.plotly_chart(fig, use_container_width=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -238,7 +389,6 @@ with tab2:
         st.info("Daily data not yet available.")
     else:
         fig = go.Figure()
-
         for w_id in sorted(all_daily['window_id'].unique()):
             w_df  = all_daily[all_daily['window_id'] == w_id]
             curve = build_equity_curve(w_df)
@@ -246,27 +396,17 @@ with tab2:
             label = str(year[0]) if len(year) > 0 else f"W{w_id}"
             beats = summary_df[summary_df['window_id'] == w_id]['beats_benchmark'].values
             color = '#00C853' if (len(beats) > 0 and beats[0]) else '#FF1744'
+            fig.add_scatter(x=w_df.index, y=curve, mode='lines', name=label,
+                            line=dict(color=color, width=1.5), opacity=0.7)
 
-            fig.add_scatter(
-                x=w_df.index, y=curve,
-                mode='lines', name=label,
-                line=dict(color=color, width=1.5),
-                opacity=0.7
-            )
-
-        fig.update_layout(
-            template='plotly_dark', height=500,
-            yaxis_title='Portfolio Value (normalised to 1.0)',
-            xaxis_title='Date',
-            legend=dict(x=1.01, y=1)
-        )
-        fig.add_hline(y=1.0, line_dash='dash',
-                      line_color='white', opacity=0.3,
-                      annotation_text='Start')
+        fig.update_layout(template='plotly_dark', height=500,
+                          yaxis_title='Portfolio Value (normalised to 1.0)',
+                          xaxis_title='Date', legend=dict(x=1.01, y=1))
+        fig.add_hline(y=1.0, line_dash='dash', line_color='white',
+                      opacity=0.3, annotation_text='Start')
         st.plotly_chart(fig, use_container_width=True)
         st.caption("Green = beats AGG benchmark | Red = trails AGG")
 
-        # ── Rolling Sharpe ────────────────────────────────────────────────────
         st.subheader("Rolling 60-Day Sharpe (All Windows)")
         fig2 = go.Figure()
         for w_id in sorted(all_daily['window_id'].unique()):
@@ -274,15 +414,11 @@ with tab2:
             rolling = compute_rolling_sharpe(w_df['net_return'])
             year    = summary_df[summary_df['window_id'] == w_id]['test_year'].values
             label   = str(year[0]) if len(year) > 0 else f"W{w_id}"
-            fig2.add_scatter(
-                x=w_df.index, y=rolling,
-                mode='lines', name=label, line=dict(width=1.5)
-            )
+            fig2.add_scatter(x=w_df.index, y=rolling, mode='lines',
+                             name=label, line=dict(width=1.5))
         fig2.add_hline(y=0, line_dash='dash', line_color='white', opacity=0.3)
-        fig2.update_layout(
-            template='plotly_dark', height=400,
-            yaxis_title='Rolling Sharpe', xaxis_title='Date'
-        )
+        fig2.update_layout(template='plotly_dark', height=400,
+                           yaxis_title='Rolling Sharpe', xaxis_title='Date')
         st.plotly_chart(fig2, use_container_width=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -309,19 +445,14 @@ with tab3:
                 avg_weights.append(row)
 
             wt_df = pd.DataFrame(avg_weights)
-
             fig = go.Figure()
             for asset in ASSETS:
                 if asset in wt_df.columns:
-                    fig.add_bar(
-                        x=wt_df['year'], y=wt_df[asset],
-                        name=asset, marker_color=COLORS.get(asset, '#888')
-                    )
-            fig.update_layout(
-                barmode='stack', template='plotly_dark',
-                yaxis_title='Average Weight', xaxis_title='Test Year',
-                height=400, yaxis=dict(range=[0, 1])
-            )
+                    fig.add_bar(x=wt_df['year'], y=wt_df[asset],
+                                name=asset, marker_color=COLORS.get(asset, '#888'))
+            fig.update_layout(barmode='stack', template='plotly_dark',
+                              yaxis_title='Average Weight', xaxis_title='Test Year',
+                              height=400, yaxis=dict(range=[0, 1]))
             st.plotly_chart(fig, use_container_width=True)
 
             st.subheader("Daily Weights — Select Window")
@@ -332,27 +463,21 @@ with tab3:
                     available_years.append((w_id, str(year[0])))
 
             if available_years:
-                sel_label = st.selectbox(
-                    "Test Year",
-                    [y for _, y in available_years]
-                )
+                sel_label = st.selectbox("Test Year",
+                                         [y for _, y in available_years])
                 sel_wid = next(w for w, y in available_years if y == sel_label)
                 sel_df  = all_daily[all_daily['window_id'] == sel_wid]
 
                 fig3 = go.Figure()
                 for col in weight_cols:
                     asset = col.replace('w_', '')
-                    fig3.add_scatter(
-                        x=sel_df.index, y=sel_df[col],
-                        mode='lines', name=asset,
-                        stackgroup='one',
-                        line=dict(color=COLORS.get(asset, '#888'))
-                    )
-                fig3.update_layout(
-                    template='plotly_dark', height=400,
-                    yaxis_title='Weight', xaxis_title='Date',
-                    yaxis=dict(range=[0, 1])
-                )
+                    fig3.add_scatter(x=sel_df.index, y=sel_df[col],
+                                     mode='lines', name=asset,
+                                     stackgroup='one',
+                                     line=dict(color=COLORS.get(asset, '#888')))
+                fig3.update_layout(template='plotly_dark', height=400,
+                                   yaxis_title='Weight', xaxis_title='Date',
+                                   yaxis=dict(range=[0, 1]))
                 st.plotly_chart(fig3, use_container_width=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -389,33 +514,23 @@ with tab4:
         if not w_daily.empty:
             curve = build_equity_curve(w_daily)
             fig   = go.Figure()
-            fig.add_scatter(
-                x=w_daily.index, y=curve,
-                mode='lines', name='FTRL',
-                line=dict(color=COLORS['FTRL'], width=2)
-            )
-            fig.add_hline(y=1.0, line_dash='dash',
-                          line_color='white', opacity=0.4)
-            fig.update_layout(
-                template='plotly_dark', height=350,
-                title=f"Equity Curve — Test Year {row['test_year']}",
-                yaxis_title='Portfolio Value', xaxis_title='Date'
-            )
+            fig.add_scatter(x=w_daily.index, y=curve, mode='lines', name='FTRL',
+                            line=dict(color=COLORS['FTRL'], width=2))
+            fig.add_hline(y=1.0, line_dash='dash', line_color='white', opacity=0.4)
+            fig.update_layout(template='plotly_dark', height=350,
+                              title=f"Equity Curve — Test Year {row['test_year']}",
+                              yaxis_title='Portfolio Value', xaxis_title='Date')
             st.plotly_chart(fig, use_container_width=True)
 
             peak = curve.cummax()
             dd   = (curve - peak) / peak
             fig2 = go.Figure()
-            fig2.add_scatter(
-                x=w_daily.index, y=dd * 100,
-                mode='lines', fill='tozeroy',
-                line=dict(color='#FF1744', width=1),
-                name='Drawdown'
-            )
-            fig2.update_layout(
-                template='plotly_dark', height=250,
-                title='Drawdown (%)', yaxis_title='%', xaxis_title='Date'
-            )
+            fig2.add_scatter(x=w_daily.index, y=dd * 100,
+                             mode='lines', fill='tozeroy',
+                             line=dict(color='#FF1744', width=1), name='Drawdown')
+            fig2.update_layout(template='plotly_dark', height=250,
+                               title='Drawdown (%)',
+                               yaxis_title='%', xaxis_title='Date')
             st.plotly_chart(fig2, use_container_width=True)
 
 # ── Footer ────────────────────────────────────────────────────────────────────
@@ -423,5 +538,6 @@ st.divider()
 st.caption(
     "FTRL Engine | Data: P2SAMAPA/p2-etf-deepwave-dl | "
     "Model: P2SAMAPA/p2-etf-ftrl-engine | "
-    "Architecture: Financial Transformer + DDPG"
+    "Architecture: Financial Transformer + DDPG | "
+    "⚠️ Not financial advice"
 )
