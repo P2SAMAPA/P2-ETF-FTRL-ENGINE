@@ -1,25 +1,23 @@
 # predict.py — Daily live signal generation
 # 1. Scores yesterday's signal against actual returns
-# 2. Trains actor on full dataset (2008 → today)
-# 3. Runs inference on latest 40-day window
+# 2. Finds the best walk-forward window by excess return
+# 3. Trains actor on that window's training date range (not the full dataset)
 # 4. Winner-takes-all: highest softmax weight = tomorrow's ETF signal
 # 5. Saves latest_signal.json and appends to signal_history.json on HF
 
 import os
 import sys
 import json
-import copy
 import numpy as np
 import pandas as pd
 import torch
-import torch.nn as nn
 from datetime import datetime, date
 from huggingface_hub import HfApi, hf_hub_download
 
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 import config as cfg
 from dataset import load_etf_prices, load_benchmark_prices, align_dates
-from features import compute_features, normalise_features
+from features import compute_features, build_price_matrices, normalise_features
 from environment import PortfolioEnv, ReplayBuffer
 from ddpg import DDPGTrainer
 
@@ -69,6 +67,86 @@ def load_signal_history() -> list:
         return []
 
 
+def load_window_summaries() -> pd.DataFrame:
+    """
+    Load all available walk-forward window summaries from HF.
+    Used to find the best-performing window to train the live signal on.
+    """
+    frames = []
+    for w_id in range(1, 15):
+        try:
+            path = hf_hub_download(
+                repo_id=cfg.HF_DATASET_REPO,
+                filename=f"results/window_{w_id:02d}_summary.json",
+                repo_type="dataset",
+                token=cfg.HF_TOKEN if cfg.HF_TOKEN else None,
+                force_download=True,
+            )
+            with open(path) as f:
+                data = json.load(f)
+            frames.append(data)
+        except Exception:
+            continue
+    if not frames:
+        return pd.DataFrame()
+    df = pd.DataFrame(frames)
+    # Normalise column names (train.py may use slightly different keys)
+    df = df.rename(columns={
+        'ftrl_total_return': 'ftrl_return',
+        'agg_total_return':  'agg_return',
+        'ftrl_max_drawdown': 'ftrl_max_dd',
+    })
+    return df
+
+
+def find_best_window(summaries: pd.DataFrame) -> dict:
+    """
+    Find the best walk-forward window by excess return over AGG.
+    Returns a dict with train_start, train_end, label, window_id.
+
+    The live signal is trained on the same date range as the best
+    back-tested window, extended to today so the model also sees
+    the most recent price action.
+
+    Falls back to full dataset (2008 → today) if no summaries available.
+    """
+    if summaries.empty or 'excess_return' not in summaries.columns:
+        print("[Best Window] No summaries found — defaulting to full dataset")
+        return {
+            'window_id':   0,
+            'label':       'full dataset',
+            'train_start': '2008-01-01',
+            'train_end':   date.today().strftime('%Y-%m-%d'),
+        }
+
+    best_idx = summaries['excess_return'].idxmax()
+    best_row = summaries.loc[best_idx]
+    wid      = int(best_row['window_id'])
+
+    # Walk-forward window N trains on 2008 → (test_year - 1).
+    # We keep 2008 as the start and extend the end to today so the model
+    # uses the best-validated architecture but sees up-to-date prices.
+    train_end_year = int(best_row.get('test_year', 2024)) - 1
+    train_start    = '2008-01-01'
+    train_end      = f"{train_end_year}-12-31"
+    label          = f"W{wid:02d}: 2008\u2013{train_end_year}"
+
+    print(f"[Best Window] W{wid:02d} — test year {int(best_row.get('test_year','?'))} "
+          f"(excess={best_row['excess_return']:.2%}, "
+          f"sharpe={best_row.get('ftrl_sharpe', 0):.3f})")
+    print(f"[Best Window] Training on: {train_start} → {train_end}")
+
+    return {
+        'window_id':     wid,
+        'label':         label,
+        'train_start':   train_start,
+        'train_end':     train_end,
+        'test_year':     int(best_row.get('test_year', 0)),
+        'excess_return': float(best_row['excess_return']),
+        'ftrl_sharpe':   float(best_row.get('ftrl_sharpe', 0)),
+    }
+
+
 def score_yesterday(prev_signal: dict, prices: pd.DataFrame,
                     bench: pd.Series) -> dict:
     """
@@ -85,7 +163,6 @@ def score_yesterday(prev_signal: dict, prices: pd.DataFrame,
         return None
 
     try:
-        # Find the trading day after the signal date
         signal_dt   = pd.Timestamp(signal_date)
         future_days = prices.index[prices.index > signal_dt]
 
@@ -95,7 +172,6 @@ def score_yesterday(prev_signal: dict, prices: pd.DataFrame,
 
         next_day = future_days[0]
 
-        # ETF return on the signal day
         if signal_etf not in prices.columns:
             return None
 
@@ -131,56 +207,69 @@ def score_yesterday(prev_signal: dict, prices: pd.DataFrame,
         return None
 
 
-# ── Training on full dataset ──────────────────────────────────────────────────
+# ── Training on best window ────────────────────────────────────────────────────
 
-def train_full(prices: pd.DataFrame) -> DDPGTrainer:
+def train_on_window(best_window: dict, prices: pd.DataFrame) -> tuple:
     """
-    Train DDPG actor on full price history (2008 → today).
-    Returns trained DDPGTrainer ready for inference.
+    Train DDPG on the best walk-forward window's date range.
+    Normalisation uses training set stats only (no lookahead).
+    For inference, the full price history from train_start to today
+    is normalised with those same stats.
+    Returns (trainer, full_feat_norm).
     """
-    print(f"\n[Train] Full dataset: {prices.index[0].date()} → "
-          f"{prices.index[-1].date()} ({len(prices)} days)")
+    train_prices = prices[
+        (prices.index >= best_window['train_start']) &
+        (prices.index <= best_window['train_end'])
+    ].copy()
 
-    from features import compute_features, build_price_matrices, normalise_features
+    # Full price history from train_start → today for inference
+    full_prices = prices[
+        prices.index >= best_window['train_start']
+    ].copy()
 
-    # Features
-    feat = compute_features(prices)                        # (T, C, W)
+    print(f"\n[Train] {best_window['label']}")
+    print(f"[Train] Training set: {len(train_prices)} days "
+          f"({train_prices.index[0].date()} → {train_prices.index[-1].date()})")
+    print(f"[Train] Inference set: {len(full_prices)} days "
+          f"(up to {full_prices.index[-1].date()})")
 
-    # Normalise using full dataset stats (no test split here)
-    mean = feat.mean(axis=(0, 2), keepdims=True)
-    std  = feat.std(axis=(0, 2),  keepdims=True)
+    train_feat = compute_features(train_prices)
+    full_feat  = compute_features(full_prices)
+
+    mean = train_feat.mean(axis=(0, 2), keepdims=True)
+    std  = train_feat.std(axis=(0, 2),  keepdims=True)
     std  = np.where(std < 1e-8, 1.0, std)
-    feat = ((feat - mean) / std).astype(np.float32)
 
-    from features import build_price_matrices
-    matrices = build_price_matrices(feat)                  # (N, C, H, W)
-    returns  = PortfolioEnv.compute_daily_returns(prices)  # (T-1, W)
+    train_feat_norm = ((train_feat - mean) / std).astype(np.float32)
+    full_feat_norm  = ((full_feat  - mean) / std).astype(np.float32)
 
-    n = min(len(matrices), len(returns))
-    matrices = matrices[:n]
-    returns  = returns[:n]
+    train_mat = build_price_matrices(train_feat_norm)
+    train_ret = PortfolioEnv.compute_daily_returns(train_prices)
 
-    print(f"[Train] matrices={matrices.shape} returns={returns.shape}")
+    n = min(len(train_mat), len(train_ret))
+    train_mat = train_mat[:n]
+    train_ret = train_ret[:n]
 
-    env = PortfolioEnv(matrices, returns)
+    print(f"[Train] matrices={train_mat.shape} returns={train_ret.shape}")
 
-    # Cap predict runs at 30 epochs — full 50 is too slow on 4500+ day dataset.
-    # Early stopping patience (10) unchanged so model can still bail early.
+    env = PortfolioEnv(train_mat, train_ret)
+
+    # Cap predict runs at 30 epochs — early stopping (patience=10) still active
     cfg.MAX_EPOCHS = 30
 
-    trainer = DDPGTrainer(window_id=0)   # window_id=0 = full dataset run
-
+    trainer = DDPGTrainer(window_id=0)
     checkpoint_dir = "/tmp/ftrl_predict"
     trainer.train(env, checkpoint_dir)
     trainer.load_best(checkpoint_dir)
     trainer.actor.eval()
 
-    return trainer, feat
+    return trainer, full_feat_norm
 
 
 # ── Inference ─────────────────────────────────────────────────────────────────
 
-def get_signal(trainer: DDPGTrainer, feat: np.ndarray) -> dict:
+def get_signal(trainer: DDPGTrainer, feat: np.ndarray,
+               best_window: dict) -> dict:
     """
     Run actor on the latest H-day window.
     Returns winner-takes-all signal dict.
@@ -189,17 +278,14 @@ def get_signal(trainer: DDPGTrainer, feat: np.ndarray) -> dict:
     if feat.shape[0] < H:
         raise ValueError(f"Not enough data for lookback: {feat.shape[0]} < {H}")
 
-    latest_window = feat[-H:]                            # (H, C, W)
-    matrix        = latest_window.transpose(1, 0, 2)    # (C, H, W)
-    matrix_t      = torch.FloatTensor(matrix).unsqueeze(0)  # (1, C, H, W)
-
-    # Equal weight starting point
-    prev_weights = torch.ones(1, cfg.W) / cfg.W
+    latest_window = feat[-H:]
+    matrix        = latest_window.transpose(1, 0, 2)
+    matrix_t      = torch.FloatTensor(matrix).unsqueeze(0)
+    prev_weights  = torch.ones(1, cfg.W) / cfg.W
 
     with torch.no_grad():
         weights = trainer.actor(matrix_t, prev_weights).squeeze(0).numpy()
 
-    # Winner-takes-all
     best_idx   = int(np.argmax(weights))
     signal     = cfg.ASSETS[best_idx]
     confidence = float(weights[best_idx])
@@ -208,12 +294,15 @@ def get_signal(trainer: DDPGTrainer, feat: np.ndarray) -> dict:
                    for i in range(cfg.W)}
 
     result = {
-        'date':         date.today().strftime('%Y-%m-%d'),
-        'signal':       signal,
-        'confidence':   round(confidence, 4),
-        'raw_weights':  raw_weights,
-        'trained_on':   'full dataset',
-        'generated_at': datetime.utcnow().isoformat() + 'Z',
+        'date':             date.today().strftime('%Y-%m-%d'),
+        'signal':           signal,
+        'confidence':       round(confidence, 4),
+        'raw_weights':      raw_weights,
+        'trained_on':       best_window['label'],
+        'train_start':      best_window['train_start'],
+        'train_end':        best_window['train_end'],
+        'best_window_id':   best_window['window_id'],
+        'generated_at':     datetime.utcnow().isoformat() + 'Z',
     }
 
     print(f"\n[Signal] {result['date']} → {signal} "
@@ -232,7 +321,7 @@ def main():
     print(f"Run date: {date.today()}")
     print("="*60)
 
-    # 1. Load data
+    # 1. Load price data
     prices = load_etf_prices()
     bench  = load_benchmark_prices()
     prices, bench = align_dates(prices, bench)
@@ -244,7 +333,8 @@ def main():
     print(f"\n[History] {len(signal_history)} previous signals loaded")
     if prev_signal:
         print(f"[Yesterday] signal={prev_signal.get('signal')} "
-              f"date={prev_signal.get('date')}")
+              f"date={prev_signal.get('date')} "
+              f"trained_on={prev_signal.get('trained_on', '?')}")
 
     # 3. Score yesterday's signal
     scored = score_yesterday(prev_signal, prices, bench)
@@ -252,16 +342,19 @@ def main():
         signal_history.append(scored)
         print(f"[History] Appended scored record. Total: {len(signal_history)}")
 
-    # Keep only last 90 records in history file (UI shows 15, keep 90 for buffer)
     signal_history = signal_history[-90:]
 
-    # 4. Train on full dataset
-    trainer, feat = train_full(prices)
+    # 4. Find best walk-forward window
+    summaries   = load_window_summaries()
+    best_window = find_best_window(summaries)
 
-    # 5. Generate today's signal
-    signal = get_signal(trainer, feat)
+    # 5. Train on best window
+    trainer, feat = train_on_window(best_window, prices)
 
-    # 6. Save files locally
+    # 6. Generate today's signal
+    signal = get_signal(trainer, feat, best_window)
+
+    # 7. Save and push
     os.makedirs("/tmp/ftrl_predict", exist_ok=True)
 
     signal_path  = "/tmp/ftrl_predict/latest_signal.json"
@@ -269,16 +362,15 @@ def main():
 
     with open(signal_path, 'w') as f:
         json.dump(signal, f, indent=2)
-
     with open(history_path, 'w') as f:
         json.dump(signal_history, f, indent=2)
 
-    # 7. Push to HF
     push_to_hf(signal_path,  "results/latest_signal.json")
     push_to_hf(history_path, "results/signal_history.json")
 
     print(f"\n[Done] Signal for {signal['date']}: "
           f"{signal['signal']} ({signal['confidence']:.1%} confidence)")
+    print(f"[Done] Trained on: {best_window['label']}")
     print(f"[Done] History: {len(signal_history)} records saved")
 
 
