@@ -528,6 +528,21 @@ with tab1:
             f"Sharpe: {best_exp['ftrl_sharpe']:.3f}"
         )
 
+    # Show which window today's expanding signal was trained on (matches Reverse tab style)
+    if signal_exp:
+        trained_on  = signal_exp.get('trained_on', '—')
+        train_start = signal_exp.get('train_start', '')
+        train_end   = signal_exp.get('train_end', '')
+        if train_start and train_end:
+            st.info(
+                f"ℹ️ Today's expanding signal was trained on: "
+                f"**{trained_on}** "
+                f"(from {train_start} \u2192 {train_end})"
+            )
+        else:
+            # Older signal JSON before this fix — no train_start/end stored
+            st.info(f"ℹ️ Today's expanding signal was trained on: **{trained_on}**")
+
     ov_t1, ov_t2, ov_t3, ov_t4 = st.tabs([
         "📊 Summary", "📈 Equity Curves", "⚖️ Weights", "🔍 Window Detail"
     ])
