@@ -520,27 +520,47 @@ with tab1:
     st.subheader(f"Walk-Forward Results — {n}/14 Windows Complete")
 
     if 'excess_return' in summary_df.columns:
-        best_exp = summary_df.loc[summary_df['excess_return'].idxmax()]
-        st.success(
-            f"🏆 Best window: **W{int(best_exp['window_id']):02d}** "
-            f"(Test {int(best_exp['test_year'])}) — "
-            f"Excess: {best_exp['excess_return']:.2%} | "
-            f"Sharpe: {best_exp['ftrl_sharpe']:.3f}"
+        # Prefer live_excess_return once train.py upgrade has run
+        has_live_exp = (
+            'live_excess_return' in summary_df.columns and
+            summary_df['live_excess_return'].notna().any()
         )
+        if has_live_exp:
+            live_pool = summary_df[summary_df['live_excess_return'].notna()]
+            best_exp  = live_pool.loc[live_pool['live_excess_return'].idxmax()]
+            n_days    = int(best_exp.get('live_n_days') or 0)
+            st.success(
+                f"🏆 Best window (live 2025+, {n_days} days): "
+                f"**W{int(best_exp['window_id']):02d}** "
+                f"(trained 2008\u2013{str(best_exp.get('train_end',''))[:4]}) — "
+                f"Live Excess: {best_exp['live_excess_return']:.2%} | "
+                f"Live Sharpe: {float(best_exp.get('live_sharpe') or 0):.3f}"
+            )
+        else:
+            best_exp = summary_df.loc[summary_df['excess_return'].idxmax()]
+            st.success(
+                f"🏆 Best window (historical): "
+                f"**W{int(best_exp['window_id']):02d}** "
+                f"(Test {int(best_exp['test_year'])}) — "
+                f"Excess: {best_exp['excess_return']:.2%} | "
+                f"Sharpe: {best_exp['ftrl_sharpe']:.3f}"
+            )
+            st.warning(
+                "⚠️ Re-run training to get live 2025+ metrics — "
+                "best window will then be selected on the same basis as Reverse Windows."
+            )
 
-    # Show which window today's expanding signal was trained on (matches Reverse tab style)
+    # Info box: which window today's signal used and why
     if signal_exp:
         trained_on  = signal_exp.get('trained_on', '—')
         train_start = signal_exp.get('train_start', '')
         train_end   = signal_exp.get('train_end', '')
+        basis       = signal_exp.get('basis', '')
         if train_start and train_end:
-            st.info(
-                f"ℹ️ Today's expanding signal was trained on: "
-                f"**{trained_on}** "
-                f"(from {train_start} \u2192 {train_end})"
-            )
+            detail = f"from {train_start} \u2192 {train_end}"
+            detail += f" · selected by {basis}" if basis else ""
+            st.info(f"ℹ️ Today's expanding signal was trained on: **{trained_on}** ({detail})")
         else:
-            # Older signal JSON before this fix — no train_start/end stored
             st.info(f"ℹ️ Today's expanding signal was trained on: **{trained_on}**")
 
     ov_t1, ov_t2, ov_t3, ov_t4 = st.tabs([
