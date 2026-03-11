@@ -577,7 +577,7 @@ with tab1:
                 xaxis_title='Test Year',
                 yaxis_title='Excess Return (%)',
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, key='ov_t1_excess_bar')
             st.caption(
                 "Green = beats AGG | Red = trails AGG | "
                 "Bars show FTRL excess return per test year."
@@ -604,7 +604,7 @@ with tab1:
                               legend=dict(x=1.01, y=1))
             fig.add_hline(y=1.0, line_dash='dash', line_color='white',
                           opacity=0.3, annotation_text='Start')
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, key='ov_t2_equity')
             st.caption("Green = beats AGG | Red = trails AGG")
 
             st.subheader("Rolling 60-Day Sharpe")
@@ -619,7 +619,7 @@ with tab1:
             fig2.add_hline(y=0, line_dash='dash', line_color='white', opacity=0.3)
             fig2.update_layout(template='plotly_dark', height=400,
                                yaxis_title='Rolling Sharpe')
-            st.plotly_chart(fig2, use_container_width=True)
+            st.plotly_chart(fig2, use_container_width=True, key='ov_t2_sharpe')
 
     # ── SUB-TAB 3: Weights ─────────────────────────────────────────────────
     with ov_t3:
@@ -649,7 +649,7 @@ with tab1:
                                   xaxis_title='Test Year',
                                   yaxis_title='Average Weight',
                                   yaxis=dict(range=[0,1]))
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, use_container_width=True, key='ov_t3_weights_bar')
 
                 available = [
                     (w_id, str(summary_df[summary_df['window_id']==w_id]
@@ -671,7 +671,7 @@ with tab1:
                     fig3.update_layout(template='plotly_dark', height=400,
                                        yaxis_title='Weight',
                                        yaxis=dict(range=[0,1]))
-                    st.plotly_chart(fig3, use_container_width=True)
+                    st.plotly_chart(fig3, use_container_width=True, key='ov_t3_weights_ts')
 
     # ── SUB-TAB 4: Window Detail ───────────────────────────────────────────
     with ov_t4:
@@ -705,7 +705,7 @@ with tab1:
                 fig.update_layout(template='plotly_dark', height=350,
                                   title=f"Equity Curve — Test {row['test_year']}",
                                   yaxis_title='Portfolio Value')
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, use_container_width=True, key='ov_t4_equity')
 
                 peak = curve.cummax()
                 dd   = (curve - peak) / peak
@@ -716,7 +716,7 @@ with tab1:
                 fig2.update_layout(template='plotly_dark', height=250,
                                    title='Drawdown (%)',
                                    yaxis_title='%')
-                st.plotly_chart(fig2, use_container_width=True)
+                st.plotly_chart(fig2, use_container_width=True, key='ov_t4_dd')
 
                 weight_cols_wd = [f'w_{a}' for a in ASSETS
                                    if f'w_{a}' in wd.columns]
@@ -730,7 +730,7 @@ with tab1:
                             line=dict(color=COLORS.get(col.replace('w_',''), '#888')))
                     fig3.update_layout(template='plotly_dark', height=300,
                                        yaxis=dict(range=[0, 1]))
-                    st.plotly_chart(fig3, use_container_width=True)
+                    st.plotly_chart(fig3, use_container_width=True, key='ov_t4_weights')
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 2: EQUITY CURVES (kept as top-level shortcut — mirrors ov_t2)
@@ -755,7 +755,7 @@ with tab2:
                           legend=dict(x=1.01, y=1))
         fig.add_hline(y=1.0, line_dash='dash', line_color='white',
                       opacity=0.3, annotation_text='Start')
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, key='tab2_equity')
         st.caption("Green = beats AGG | Red = trails AGG")
 
         st.subheader("Rolling 60-Day Sharpe")
@@ -770,7 +770,7 @@ with tab2:
         fig2.add_hline(y=0, line_dash='dash', line_color='white', opacity=0.3)
         fig2.update_layout(template='plotly_dark', height=400,
                            yaxis_title='Rolling Sharpe')
-        st.plotly_chart(fig2, use_container_width=True)
+        st.plotly_chart(fig2, use_container_width=True, key='tab2_sharpe')
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 3: WEIGHTS
@@ -799,7 +799,7 @@ with tab3:
                                 marker_color=COLORS.get(asset,'#888'))
             fig.update_layout(barmode='stack', template='plotly_dark',
                               height=400, yaxis=dict(range=[0,1]))
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, key='tab3_weights_bar')
 
             available = [
                 (w_id, str(summary_df[summary_df['window_id']==w_id]
@@ -820,7 +820,7 @@ with tab3:
                         line=dict(color=COLORS.get(col.replace('w_',''),'#888')))
                 fig3.update_layout(template='plotly_dark', height=400,
                                    yaxis=dict(range=[0,1]))
-                st.plotly_chart(fig3, use_container_width=True)
+                st.plotly_chart(fig3, use_container_width=True, key='tab3_weights_ts')
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 4: WINDOW DETAIL
@@ -855,7 +855,7 @@ with tab4:
                           line_color='white', opacity=0.4)
             fig.update_layout(template='plotly_dark', height=350,
                               title=f"Equity Curve — Test {row['test_year']}")
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, key='tab4_equity')
 
             peak = curve.cummax()
             dd   = (curve - peak) / peak
@@ -865,7 +865,7 @@ with tab4:
                              line=dict(color='#FF1744', width=1))
             fig2.update_layout(template='plotly_dark', height=250,
                                title='Drawdown (%)')
-            st.plotly_chart(fig2, use_container_width=True)
+            st.plotly_chart(fig2, use_container_width=True, key='tab4_dd')
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 5: REVERSE WINDOWS
@@ -954,7 +954,7 @@ with tab5:
                     xaxis_title='Reverse Window (R01=starts 2008 → R14=starts 2021)',
                     yaxis_title='Excess Return (%)',
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, use_container_width=True, key='rev_t1_excess_bar')
                 st.caption(
                     "Peak performance window = optimal training lookback. "
                     "Declining performance toward R14 means older data still helps."
@@ -984,7 +984,7 @@ with tab5:
                                   yaxis_title='Portfolio Value (normalised to 1.0)',
                                   xaxis_title='Date',
                                   legend=dict(x=1.01, y=1))
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, use_container_width=True, key='rev_t2_equity')
                 st.caption("Green = beats AGG | Red = trails AGG | "
                            "Test period: 2025-01-01 → present")
 
@@ -1003,7 +1003,7 @@ with tab5:
                 fig2.update_layout(template='plotly_dark', height=400,
                                    yaxis_title='Rolling Sharpe',
                                    xaxis_title='Date')
-                st.plotly_chart(fig2, use_container_width=True)
+                st.plotly_chart(fig2, use_container_width=True, key='rev_t2_sharpe')
 
         with rev_t3:
             st.subheader("Average Portfolio Weight Allocation — Reverse Windows")
@@ -1036,7 +1036,7 @@ with tab5:
                                       xaxis_title='Reverse Window',
                                       yaxis_title='Average Weight',
                                       yaxis=dict(range=[0, 1]))
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, use_container_width=True, key='rev_t3_weights_bar')
 
                     available_rev = [
                         (w_id, reverse_summary_df[
@@ -1067,7 +1067,7 @@ with tab5:
                         fig3.update_layout(template='plotly_dark', height=400,
                                            yaxis_title='Weight',
                                            yaxis=dict(range=[0, 1]))
-                        st.plotly_chart(fig3, use_container_width=True)
+                        st.plotly_chart(fig3, use_container_width=True, key='rev_t3_weights_ts')
 
         with rev_t4:
             st.subheader("Individual Reverse Window Analysis")
@@ -1116,7 +1116,7 @@ with tab5:
                             template='plotly_dark', height=350,
                             title=f"Equity Curve — {sel_label2}",
                             yaxis_title='Portfolio Value')
-                        st.plotly_chart(fig4, use_container_width=True)
+                        st.plotly_chart(fig4, use_container_width=True, key='rev_t4_equity')
 
                         peak2 = curve2.cummax()
                         dd2   = (curve2 - peak2) / peak2
@@ -1127,7 +1127,7 @@ with tab5:
                         fig5.update_layout(template='plotly_dark', height=250,
                                            title='Drawdown (%)',
                                            yaxis_title='%')
-                        st.plotly_chart(fig5, use_container_width=True)
+                        st.plotly_chart(fig5, use_container_width=True, key='rev_t4_dd')
 
                         weight_cols2 = [f'w_{a}' for a in ASSETS
                                         if f'w_{a}' in wd2.columns]
@@ -1144,7 +1144,7 @@ with tab5:
                                         col.replace('w_', ''), '#888')))
                             fig6.update_layout(template='plotly_dark', height=300,
                                                yaxis=dict(range=[0, 1]))
-                            st.plotly_chart(fig6, use_container_width=True)
+                            st.plotly_chart(fig6, use_container_width=True, key='rev_t4_weights')
 
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.divider()
