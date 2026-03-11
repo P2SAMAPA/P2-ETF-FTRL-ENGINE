@@ -1,9 +1,13 @@
 # predict.py — Daily live signal generation
 # 1. Scores yesterday's signal against actual returns
-# 2. Finds the best walk-forward window by excess return
-# 3. Trains actor on that window's training date range (not the full dataset)
+# 2. Finds best walk-forward window by LIVE 2025+ excess return
+#    (falls back to historical excess if live metrics not yet available)
+# 3. Trains actor on that window's exact training date range
 # 4. Winner-takes-all: highest softmax weight = tomorrow's ETF signal
 # 5. Saves latest_signal.json and appends to signal_history.json on HF
+#
+# After train.py upgrade: expanding window "best" is now selected on the
+# same 2025+ live period as reverse windows — directly comparable.
 
 import os
 import sys
@@ -90,7 +94,7 @@ def load_window_summaries() -> pd.DataFrame:
     if not frames:
         return pd.DataFrame()
     df = pd.DataFrame(frames)
-    # Normalise column names (train.py may use slightly different keys)
+    # Normalise legacy column names without dropping live_* fields
     df = df.rename(columns={
         'ftrl_total_return': 'ftrl_return',
         'agg_total_return':  'agg_return',
@@ -101,17 +105,23 @@ def load_window_summaries() -> pd.DataFrame:
 
 def find_best_window(summaries: pd.DataFrame) -> dict:
     """
-    Find the best walk-forward window by excess return over AGG.
-    Returns a dict with train_start, train_end, label, window_id.
+    Find the best walk-forward window for the live signal.
 
-    The live signal is trained on the same date range as the best
-    back-tested window, extended to today so the model also sees
-    the most recent price action.
+    Priority:
+      1. live_excess_return  — model evaluated on 2025+ data (same basis
+                               as reverse windows). Available after train.py
+                               upgrade. Directly comparable to reverse signal.
+      2. excess_return       — historical test-year excess (fallback for
+                               pre-upgrade summaries).
+      3. Hardcoded fallback  — full dataset if no summaries at all.
 
-    Falls back to full dataset (2008 → today) if no summaries available.
+    Training range: always 2008 → window's train_end (not extended to today).
+    This keeps the training regime identical to what was evaluated, avoiding
+    a silent distribution shift where the "best" window was validated on
+    2008–2015 data but we then train on 2008–2025.
     """
     if summaries.empty or 'excess_return' not in summaries.columns:
-        print("[Best Window] No summaries found — defaulting to full dataset")
+        print("[Best Window] No summaries — defaulting to full dataset")
         return {
             'window_id':   0,
             'label':       'full dataset',
@@ -119,31 +129,47 @@ def find_best_window(summaries: pd.DataFrame) -> dict:
             'train_end':   date.today().strftime('%Y-%m-%d'),
         }
 
-    best_idx = summaries['excess_return'].idxmax()
-    best_row = summaries.loc[best_idx]
-    wid      = int(best_row['window_id'])
+    # ── Choose metric ─────────────────────────────────────────────────────────
+    has_live = (
+        'live_excess_return' in summaries.columns and
+        summaries['live_excess_return'].notna().any()
+    )
 
-    # Walk-forward window N trains on 2008 → (test_year - 1).
-    # We keep 2008 as the start and extend the end to today so the model
-    # uses the best-validated architecture but sees up-to-date prices.
-    train_end_year = int(best_row.get('test_year', 2024)) - 1
-    train_start    = '2008-01-01'
-    train_end      = f"{train_end_year}-12-31"
-    label          = f"W{wid:02d}: 2008\u2013{train_end_year}"
+    if has_live:
+        pool     = summaries[summaries['live_excess_return'].notna()].copy()
+        best_idx = pool['live_excess_return'].idxmax()
+        best_row = pool.loc[best_idx]
+        metric_val   = float(best_row['live_excess_return'])
+        sharpe_val   = float(best_row.get('live_sharpe') or 0)
+        n_days       = int(best_row.get('live_n_days') or 0)
+        metric_label = f"live_excess={metric_val:.2%} ({n_days} days 2025+)"
+        basis        = "live 2025+"
+    else:
+        best_idx = summaries['excess_return'].idxmax()
+        best_row = summaries.loc[best_idx]
+        metric_val   = float(best_row['excess_return'])
+        sharpe_val   = float(best_row.get('ftrl_sharpe') or 0)
+        metric_label = f"hist_excess={metric_val:.2%} (re-run training for live metrics)"
+        basis        = f"historical test {int(best_row.get('test_year', '?'))}"
 
-    print(f"[Best Window] W{wid:02d} — test year {int(best_row.get('test_year','?'))} "
-          f"(excess={best_row['excess_return']:.2%}, "
-          f"sharpe={best_row.get('ftrl_sharpe', 0):.3f})")
+    wid        = int(best_row['window_id'])
+    train_end  = str(best_row.get('train_end', f"{int(best_row.get('test_year', 2024))-1}-12-31"))
+    train_start= str(best_row.get('train_start', '2008-01-01'))
+    label      = f"W{wid:02d}: {train_start[:4]}–{train_end[:4]} (best {basis})"
+
+    print(f"[Best Window] W{wid:02d} — {metric_label}, sharpe={sharpe_val:.3f}")
     print(f"[Best Window] Training on: {train_start} → {train_end}")
 
     return {
-        'window_id':     wid,
-        'label':         label,
-        'train_start':   train_start,
-        'train_end':     train_end,
-        'test_year':     int(best_row.get('test_year', 0)),
-        'excess_return': float(best_row['excess_return']),
-        'ftrl_sharpe':   float(best_row.get('ftrl_sharpe', 0)),
+        'window_id':          wid,
+        'label':              label,
+        'train_start':        train_start,
+        'train_end':          train_end,
+        'live_excess_return': metric_val if has_live else None,
+        'live_sharpe':        sharpe_val if has_live else None,
+        'excess_return':      float(best_row.get('excess_return', 0)),
+        'ftrl_sharpe':        float(best_row.get('ftrl_sharpe', 0)),
+        'basis':              basis,
     }
 
 
