@@ -135,23 +135,39 @@ def load_latest_reverse_signal() -> dict:
         return {}
 
 
-# FIX 1: Added force_download=True to both history loaders.
-# Previously these lacked force_download, so HF served a cached local copy
-# and new scored records were never seen by the dashboard.
+# CRITICAL FIX: Properly handle history loading with column validation
 @st.cache_data(ttl=300)
 def load_signal_history() -> pd.DataFrame:
     try:
         path = hf_hub_download(repo_id=HF_REPO,
             filename="results/signal_history.json",
-            repo_type="dataset", force_download=True)   # <-- FIXED
+            repo_type="dataset", force_download=True)
         with open(path) as f:
             data = json.load(f)
         if not data:
             return pd.DataFrame()
         df = pd.DataFrame(data)
+        
+        # CRITICAL FIX: Ensure required columns exist for scoring
+        if 'date' not in df.columns:
+            return pd.DataFrame()
+        
         df['date'] = pd.to_datetime(df['date'])
+        
+        # Ensure scored columns exist (may not be present for unscored records)
+        if 'beats_agg' not in df.columns:
+            df['beats_agg'] = np.nan
+        if 'excess_return' not in df.columns:
+            df['excess_return'] = np.nan
+        if 'actual_return' not in df.columns:
+            df['actual_return'] = np.nan
+        if 'agg_return' not in df.columns:
+            df['agg_return'] = np.nan
+            
         return df.sort_values('date', ascending=False).reset_index(drop=True)
-    except Exception:
+    except Exception as e:
+        # Log error for debugging but return empty DataFrame
+        print(f"[load_signal_history] Error: {e}")
         return pd.DataFrame()
 
 
@@ -160,15 +176,32 @@ def load_reverse_signal_history() -> pd.DataFrame:
     try:
         path = hf_hub_download(repo_id=HF_REPO,
             filename="results/reverse_signal_history.json",
-            repo_type="dataset", force_download=True)   # <-- FIXED
+            repo_type="dataset", force_download=True)
         with open(path) as f:
             data = json.load(f)
         if not data:
             return pd.DataFrame()
         df = pd.DataFrame(data)
+        
+        # CRITICAL FIX: Ensure required columns exist for scoring
+        if 'date' not in df.columns:
+            return pd.DataFrame()
+            
         df['date'] = pd.to_datetime(df['date'])
+        
+        # Ensure scored columns exist
+        if 'beats_agg' not in df.columns:
+            df['beats_agg'] = np.nan
+        if 'excess_return' not in df.columns:
+            df['excess_return'] = np.nan
+        if 'actual_return' not in df.columns:
+            df['actual_return'] = np.nan
+        if 'agg_return' not in df.columns:
+            df['agg_return'] = np.nan
+            
         return df.sort_values('date', ascending=False).reset_index(drop=True)
-    except Exception:
+    except Exception as e:
+        print(f"[load_reverse_signal_history] Error: {e}")
         return pd.DataFrame()
 
 
@@ -279,30 +312,43 @@ W_DD     = 0.20
 
 
 def compute_live_score(history_df: pd.DataFrame, n_total: int) -> tuple:
+    """Compute live performance score from scored history."""
     if history_df.empty:
         return None, 0.0, 0.0, 0.0, 0, 0
+    
+    # CRITICAL FIX: Filter for actually scored records (both fields must be present)
     scored = history_df[history_df['beats_agg'].notna() &
                         history_df['excess_return'].notna()].copy()
     scored = scored.sort_values('date', ascending=True)
     n = len(scored)
+    
     if n == 0:
         return None, 0.0, 0.0, 0.0, 0, 0
+    
+    # Use rolling window if we have enough history
     if n_total >= MIN_DAYS_FULL:
         scored      = scored.tail(SCORE_WINDOW)
-        window_used = SCORE_WINDOW
+        window_used = min(SCORE_WINDOW, n)
     else:
         window_used = n
+    
+    # Calculate metrics
     daily_exc   = scored['excess_return'].values
     avg_excess  = float(daily_exc.mean())
     live_sharpe = float((daily_exc.mean() /
                          (daily_exc.std() + 1e-8)) * np.sqrt(252))
+    
+    # Calculate max drawdown
     cum    = np.cumprod(1 + daily_exc)
     peak   = np.maximum.accumulate(cum)
     dd     = (cum - peak) / (peak + 1e-8)
     max_dd = float(dd.min())
+    
+    # Composite score
     score  = (W_RETURN * avg_excess +
               W_SHARPE * live_sharpe -
               W_DD     * abs(max_dd))
+              
     return score, avg_excess, live_sharpe, max_dd, n, window_used
 
 
@@ -316,14 +362,28 @@ def consensus_label(n_scored: int) -> str:
     return "full"
 
 
-exp_n_total = int(history_exp[history_exp['beats_agg'].notna()].shape[0]) if not history_exp.empty else 0
-rev_n_total = int(history_rev[history_rev['beats_agg'].notna()].shape[0]) if not history_rev.empty else 0
+# CRITICAL FIX: Properly count scored records for display
+exp_n_scored = int(history_exp['beats_agg'].notna().sum()) if not history_exp.empty else 0
+rev_n_scored = int(history_rev['beats_agg'].notna().sum()) if not history_rev.empty else 0
+
+# Also get total records for window calculation
+exp_n_total = len(history_exp) if not history_exp.empty else 0
+rev_n_total = len(history_rev) if not history_rev.empty else 0
 
 exp_score, exp_avg_exc, exp_sharpe, exp_max_dd, exp_n, exp_win = compute_live_score(history_exp, exp_n_total)
 rev_score, rev_avg_exc, rev_sharpe, rev_max_dd, rev_n, rev_win = compute_live_score(history_rev, rev_n_total)
 
-min_n     = min(exp_n, rev_n)
+# Use the minimum of actually scored records for consensus threshold
+min_n     = min(exp_n_scored, rev_n_scored)
 con_level = consensus_label(min_n)
+
+# Debug info in sidebar for troubleshooting
+with st.sidebar:
+    st.divider()
+    st.markdown("**Debug Info**")
+    st.markdown(f"Expanding: {exp_n_scored} scored / {exp_n_total} total")
+    st.markdown(f"Reverse: {rev_n_scored} scored / {rev_n_total} total")
+    st.markdown(f"Consensus needs: {MIN_DAYS_PROVISIONAL} days")
 
 # ── SIGNAL PANEL ──────────────────────────────────────────────────────────────
 has_exp = bool(signal_exp)
@@ -512,8 +572,6 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 1: OVERVIEW
-# FIX 3: Restructured to match Reverse Windows tab layout — sub-tabs for
-# Summary, Equity Curves, Weights, Window Detail — instead of a flat layout.
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab1:
     n = len(summary_df)
