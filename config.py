@@ -54,9 +54,9 @@ RISK_AVERSION    = 0.0
 # To adjust: keep all three summing to 1.0.
 # More aggressive   -> W_RETURN=0.80, W_DRAWDOWN=0.15, W_TURNOVER=0.05
 # More conservative -> W_RETURN=0.60, W_DRAWDOWN=0.30, W_TURNOVER=0.10
-W_RETURN   = 0.70   # 70% - return is the primary objective
-W_DRAWDOWN = 0.20   # 20% - penalise drawdowns from running peak
-W_TURNOVER = 0.10   # 10% - penalise excessive rebalancing
+W_RETURN   = 0.80   # 80% - return is the primary objective
+W_DRAWDOWN = 0.15   # 15% - penalise drawdowns from running peak
+W_TURNOVER = 0.05   # 5% - penalise excessive rebalancing
 
 # ── Walk-forward windows ──────────────────────────────────────────────────────
 WINDOWS = [
