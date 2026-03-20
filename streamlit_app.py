@@ -359,14 +359,14 @@ with st.sidebar:
     if run_expanding or run_both:
         ok, msg = trigger_workflow("predict.yml")
         if ok:
-            st.success("Expanding signal triggered ✅\n~10-20 min to complete.")
+            st.success("Expanding signal triggered ✅\n~2-3 hrs to complete. Check Actions tab for progress.")
         else:
             st.error(f"Expanding: {msg}")
 
     if run_reverse or run_both:
         ok, msg = trigger_workflow("predict_reverse.yml")
         if ok:
-            st.success("Reverse signal triggered ✅\n~10-20 min to complete.")
+            st.success("Reverse signal triggered ✅\n~2-3 hrs to complete. Check Actions tab for progress.")
         else:
             st.error(f"Reverse: {msg}")
 
