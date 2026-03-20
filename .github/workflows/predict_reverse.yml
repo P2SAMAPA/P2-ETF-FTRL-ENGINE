@@ -1,56 +1,37 @@
 name: Daily FTRL Reverse Signal
 
 on:
-  schedule:
-    # Mon–Fri at 21:30 UTC (30 min after expanding signal — staggered to avoid conflicts)
-    - cron: '30 21 * * 1-5'
-  workflow_dispatch:
-    # Manual trigger for testing
+  workflow_dispatch:   # manual trigger only — run after deepwave-dl data is updated
 
 jobs:
-  predict_reverse:
+  predict-reverse:
     runs-on: ubuntu-latest
-    timeout-minutes: 350
+    timeout-minutes: 60
 
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-          cache: 'pip'
+          python-version: '3.10'
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: ${{ runner.os }}-pip-
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Install torch
-        run: pip install torch==2.2.2 "numpy<2" --index-url https://download.pytorch.org/whl/cpu
-
-      - name: Set PYTHONPATH
-        run: echo "PYTHONPATH=$(pwd)" >> $GITHUB_ENV
-
-      - name: Show system info
         run: |
-          python -c "import torch; print('PyTorch:', torch.__version__)"
-          python -c "import numpy; print('NumPy:', numpy.__version__)"
-          python -c "import torch; print('CPU threads:', torch.get_num_threads())"
-          nproc
-          free -h
+          pip install --upgrade pip
+          pip install -r requirements.txt
 
-      - name: Generate daily reverse signal
+      - name: Run reverse signal
         env:
-          HF_TOKEN:        ${{ secrets.HF_TOKEN }}
-          HF_DATASET_REPO: ${{ secrets.HF_DATASET_REPO }}
-          HF_SOURCE_REPO:  ${{ secrets.HF_SOURCE_REPO }}
-        run: |
-          python predict_reverse.py
-
-      - name: Upload artifacts (local backup)
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: daily-reverse-signal-${{ github.run_id }}
-          path: /tmp/ftrl_reverse_predict/
-          retention-days: 30
+          HF_TOKEN:          ${{ secrets.HF_TOKEN }}
+          HF_DATASET_REPO:   ${{ secrets.HF_DATASET_REPO }}
+          HF_SOURCE_REPO:    ${{ secrets.HF_SOURCE_REPO }}
+        run: python predict_reverse.py
