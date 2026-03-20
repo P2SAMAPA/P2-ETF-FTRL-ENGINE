@@ -346,11 +346,13 @@ with st.sidebar:
     run_reverse = st.button(
         "▶ Run Reverse Signal",
         use_container_width=True,
+        type="primary",
         help="Triggers predict_reverse.py on GitHub Actions",
     )
     run_both = st.button(
         "▶ Run Both Signals",
         use_container_width=True,
+        type="primary",
         help="Triggers both workflows simultaneously",
     )
 
