@@ -519,6 +519,92 @@ if has_exp or has_rev:
                 signal_card(signal_rev, "TODAY'S SIGNAL (REVERSE)", '#FF9800'),
                 unsafe_allow_html=True)
 
+    # ── Consensus progress tracker ────────────────────────────────────────────
+    st.markdown("<div style='margin-top:18px'></div>", unsafe_allow_html=True)
+
+    # Build day-by-day log from signal history
+    # Each entry in history_exp has a date — total entries = signals saved
+    # scored entries = actual_return is not null
+    all_days = []
+    if not history_exp.empty and 'date' in history_exp.columns:
+        exp_sorted = history_exp.sort_values('date', ascending=True).reset_index(drop=True)
+        for i, row in exp_sorted.iterrows():
+            day_num  = i + 1
+            scored   = pd.notna(row.get('beats_agg'))
+            date_str = row['date'].strftime('%d %b') if hasattr(row['date'], 'strftime') else str(row['date'])[:10]
+            etf      = row.get('signal', '?')
+            if scored:
+                beats    = row.get('beats_agg')
+                exc      = row.get('excess_return', 0)
+                result   = "✓" if beats else "✗"
+                exc_str  = f"{exc*100:+.2f}%" if pd.notna(exc) else ""
+                status   = "scored"
+            else:
+                result  = "⏳"
+                exc_str = ""
+                status  = "saved"
+            all_days.append({
+                "day":     day_num,
+                "date":    date_str,
+                "etf":     etf,
+                "result":  result,
+                "exc":     exc_str,
+                "status":  status,
+            })
+
+    total_days  = len(all_days)
+    scored_days = sum(1 for d in all_days if d["status"] == "scored")
+    target      = MIN_DAYS_PROVISIONAL
+
+    if total_days > 0:
+        # Progress bar toward consensus activation
+        pct      = min(scored_days / target, 1.0)
+        bar_fill = int(pct * 20)
+        bar_str  = "█" * bar_fill + "░" * (20 - bar_fill)
+
+        if scored_days >= MIN_DAYS_FULL:
+            bar_color  = "#00C853"
+            status_lbl = f"✅ HIGH CONVICTION — rolling {SCORE_WINDOW}-day window active"
+        elif scored_days >= MIN_DAYS_MODERATE:
+            bar_color  = "#FF9800"
+            status_lbl = f"🔶 MODERATE — {MIN_DAYS_FULL - scored_days} days to high conviction"
+        elif scored_days >= target:
+            bar_color  = "#FF9800"
+            status_lbl = f"⚠️ PROVISIONAL — {MIN_DAYS_MODERATE - scored_days} days to moderate"
+        else:
+            bar_color  = "#78909C"
+            status_lbl = f"⏳ Building history — {target - scored_days} more scored day(s) needed"
+
+        st.markdown(f"""
+        <div style="background:rgba(120,144,156,0.08);border:1px solid rgba(120,144,156,0.25);
+                    border-radius:10px;padding:14px 18px;margin-bottom:8px;">
+            <div style="font-size:12px;letter-spacing:2px;color:#aaa;margin-bottom:8px;">
+                CONSENSUS PROGRESS — {scored_days}/{target} SCORED DAYS
+            </div>
+            <div style="font-family:monospace;font-size:15px;color:{bar_color};
+                        letter-spacing:1px;margin-bottom:6px;">[{bar_str}] {pct*100:.0f}%</div>
+            <div style="font-size:13px;color:#ccc;">{status_lbl}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Day-by-day log — show last 10 days max, most recent first
+        recent = list(reversed(all_days[-10:]))
+        cols   = st.columns(min(len(recent), 10))
+        for col, d in zip(cols, recent):
+            color = ("#00C853" if d["result"] == "✓"
+                     else "#FF1744" if d["result"] == "✗"
+                     else "#78909C")
+            etf_color = COLORS.get(d["etf"], "#aaa")
+            col.markdown(f"""
+            <div style="text-align:center;background:rgba(0,0,0,0.15);
+                        border-radius:8px;padding:8px 4px;border:1px solid {color}33;">
+                <div style="font-size:10px;color:#888;">Day {d['day']}</div>
+                <div style="font-size:11px;color:#aaa;">{d['date']}</div>
+                <div style="font-size:16px;font-weight:700;color:{etf_color};">{d['etf']}</div>
+                <div style="font-size:18px;">{d['result']}</div>
+                <div style="font-size:10px;color:{color};">{d['exc']}</div>
+            </div>""", unsafe_allow_html=True)
+
     st.markdown("---")
 
 # ── AUDIT TRAIL ───────────────────────────────────────────────────────────────
