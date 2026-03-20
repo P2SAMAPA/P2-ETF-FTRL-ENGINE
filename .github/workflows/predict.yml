@@ -1,12 +1,12 @@
 name: Daily FTRL Signal
 
 on:
-  workflow_dispatch:   # manual trigger only — run after deepwave-dl data is updated
+  workflow_dispatch:
 
 jobs:
   predict:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 180
 
     steps:
       - name: Checkout repo
@@ -21,12 +21,13 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
-          restore-keys: ${{ runner.os }}-pip-
+          key: ${{ runner.os }}-pip-predict-${{ hashFiles('requirements_predict.txt') }}
+          restore-keys: ${{ runner.os }}-pip-predict-
 
       - name: Install dependencies
         run: |
           pip install --upgrade pip
+          pip install torch==2.2.2 --index-url https://download.pytorch.org/whl/cpu
           pip install -r requirements_predict.txt
 
       - name: Run expanding signal
