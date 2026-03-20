@@ -1,50 +1,84 @@
-# config.py — single source of truth for all hyperparameters
-# ─────────────────────────────────────────────────────────────
-# Architecture sized for GitHub Actions 2-core CPU within 6-hour free tier.
-
+# config.py — single source of truth for all parameters
 import os
 
 # ── Data ──────────────────────────────────────────────────────────────────────
-ASSETS  = ['TLT', 'LQD', 'HYG', 'VNQ', 'GLD', 'SLV']
-W       = len(ASSETS)          # portfolio width = 6
+HF_SOURCE_REPO  = os.environ.get("HF_SOURCE_REPO", "P2SAMAPA/p2-etf-deepwave-dl")
+HF_DATASET_REPO = os.environ.get("HF_DATASET_REPO", "P2SAMAPA/p2-etf-ftrl-engine")
+HF_TOKEN        = os.environ.get("HF_TOKEN", "")
+ETF_FILE        = "data/etf_price.parquet"
+BENCH_FILE      = "data/bench_price.parquet"
+ASSETS          = ['TLT', 'LQD', 'HYG', 'VNQ', 'GLD', 'SLV']
+BENCHMARK       = 'AGG'
+START_DATE      = '2008-01-02'
 
-# ── Feature matrix dimensions ─────────────────────────────────────────────────
-H = 40    # lookback days (rows per matrix)
-C = 4     # features per asset: daily_ret, rvol_5d, vol_ratio, momentum_20d
+# ── Feature engineering ───────────────────────────────────────────────────────
+W               = 6     # number of assets
+H               = 40    # lookback window in trading days
+C               = 4     # features per asset per day
+VOL_SHORT       = 5
+VOL_LONG        = 20
+MOM_WINDOW      = 20
 
-# ── Transformer architecture ─────────────────────────────────────────────────
-ATTENTION_BLOCKS = 3           # reduced from paper's 6 for CPU
+# ── Model architecture ────────────────────────────────────────────────────────
+ATTENTION_BLOCKS = 3
 N_HEADS          = 4
 D_MODEL          = 64
+D_FF             = 128
+DROPOUT          = 0.1
 
-# ── DDPG hyperparameters ──────────────────────────────────────────────────────
-BATCH_SIZE  = 16
-LR          = 1e-5
-GAMMA       = 0.99
-TAU         = 0.005
-BUFFER_SIZE = 2000
-MAX_EPOCHS  = 50               # capped at 30 for daily predict runs
-EARLY_STOP_PAT = 10
+# ── DDPG training ─────────────────────────────────────────────────────────────
+LR_ACTOR         = 1e-5
+LR_CRITIC        = 1e-4
+GAMMA            = 0.99
+TAU              = 0.005
+BUFFER_SIZE      = 2000
+BATCH_SIZE       = 16
+MAX_EPOCHS       = 50
+EARLY_STOP_PAT   = 10
+NOISE_SIGMA      = 0.05
+NOISE_DECAY      = 0.995
 
-# ── Environment ───────────────────────────────────────────────────────────────
-INITIAL_CAPITAL  = 1.0
-TRANSACTION_COST = 0.001       # 0.1% of rebalanced value
-                               # now embedded in W_TURNOVER reward term
-                               # (not double-counted as a separate deduction)
+# ── Portfolio environment ─────────────────────────────────────────────────────
+TRANSACTION_COST = 0.001
+INITIAL_CAPITAL  = 100.0
+RISK_AVERSION    = 0.0
 
-# ── Composite reward weights (must sum to 1.0) ────────────────────────────────
+# ── Composite reward weights ──────────────────────────────────────────────────
 # Inspired by arxiv 2403.16667 additive utility framework.
 # Return stays primary; drawdown and turnover act as soft regularisers.
 #
-#   reward = W_RETURN  × log_return
-#          - W_DRAWDOWN × |drawdown_from_peak|
-#          - W_TURNOVER × (tc × sum_abs_weight_change)
+#   reward = W_RETURN  x  log_return
+#          - W_DRAWDOWN x |drawdown_from_peak|
+#          - W_TURNOVER x (tc x sum_abs_weight_change)
 #
-W_RETURN   = 0.70   # 70% — return is the primary objective
-W_DRAWDOWN = 0.20   # 20% — penalise drawdowns from running peak
-W_TURNOVER = 0.10   # 10% — penalise excessive rebalancing (replaces flat tc deduction)
+# To adjust: keep all three summing to 1.0.
+# More aggressive   -> W_RETURN=0.80, W_DRAWDOWN=0.15, W_TURNOVER=0.05
+# More conservative -> W_RETURN=0.60, W_DRAWDOWN=0.30, W_TURNOVER=0.10
+W_RETURN   = 0.70   # 70% - return is the primary objective
+W_DRAWDOWN = 0.20   # 20% - penalise drawdowns from running peak
+W_TURNOVER = 0.10   # 10% - penalise excessive rebalancing
 
-# ── HuggingFace repos ────────────────────────────────────────────────────────
-HF_TOKEN        = os.getenv("HF_TOKEN", "")
-HF_DATASET_REPO = os.getenv("HF_DATASET_REPO", "P2SAMAPA/p2-etf-ftrl-engine")
-HF_SOURCE_REPO  = os.getenv("HF_SOURCE_REPO",  "P2SAMAPA/p2-etf-deepwave-dl")
+# ── Walk-forward windows ──────────────────────────────────────────────────────
+WINDOWS = [
+    {'id':  1, 'train_start': '2008-01-02', 'train_end': '2010-12-31', 'test_year': '2011'},
+    {'id':  2, 'train_start': '2008-01-02', 'train_end': '2011-12-31', 'test_year': '2012'},
+    {'id':  3, 'train_start': '2008-01-02', 'train_end': '2012-12-31', 'test_year': '2013'},
+    {'id':  4, 'train_start': '2008-01-02', 'train_end': '2013-12-31', 'test_year': '2014'},
+    {'id':  5, 'train_start': '2008-01-02', 'train_end': '2014-12-31', 'test_year': '2015'},
+    {'id':  6, 'train_start': '2008-01-02', 'train_end': '2015-12-31', 'test_year': '2016'},
+    {'id':  7, 'train_start': '2008-01-02', 'train_end': '2016-12-31', 'test_year': '2017'},
+    {'id':  8, 'train_start': '2008-01-02', 'train_end': '2017-12-31', 'test_year': '2018'},
+    {'id':  9, 'train_start': '2008-01-02', 'train_end': '2018-12-31', 'test_year': '2019'},
+    {'id': 10, 'train_start': '2008-01-02', 'train_end': '2019-12-31', 'test_year': '2020'},
+    {'id': 11, 'train_start': '2008-01-02', 'train_end': '2020-12-31', 'test_year': '2021'},
+    {'id': 12, 'train_start': '2008-01-02', 'train_end': '2021-12-31', 'test_year': '2022'},
+    {'id': 13, 'train_start': '2008-01-02', 'train_end': '2022-12-31', 'test_year': '2023'},
+    {'id': 14, 'train_start': '2008-01-02', 'train_end': '2023-12-31', 'test_year': '2024'},
+]
+
+# ── Output paths ──────────────────────────────────────────────────────────────
+RESULTS_DIR      = "results"
+MODELS_DIR       = "models"
+BACKTEST_FILE    = "results/backtest_all_windows.csv"
+SUMMARY_FILE     = "results/performance_summary.json"
+TRAINING_LOG     = "results/training_log.json"
