@@ -1,7 +1,7 @@
 # predict.py / predict_reverse.py dependencies
-# CPU-only torch — sufficient for inference and short training runs on GitHub Actions
+# CPU-only torch compatible with Python 3.10 on GitHub Actions
 numpy>=1.26.4
 pandas>=2.2.4
 huggingface-hub>=0.23.4
 pyarrow>=16.1.0
-torch==2.3.1+cpu --extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.2.2
