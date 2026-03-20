@@ -1,7 +1,6 @@
 # predict.py / predict_reverse.py dependencies
-# CPU-only torch compatible with Python 3.10 on GitHub Actions
-numpy>=1.26.4
+# NumPy pinned <2 — torch 2.2.2 was compiled against NumPy 1.x
+numpy>=1.26.4,<2.0
 pandas>=2.2.4
 huggingface-hub>=0.23.4
 pyarrow>=16.1.0
-torch==2.2.2
