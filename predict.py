@@ -5,9 +5,6 @@
 # 3. Trains actor on that window's exact training date range
 # 4. Winner-takes-all: highest softmax weight = tomorrow's ETF signal
 # 5. Saves latest_signal.json and appends to signal_history.json on HF
-#
-# After train.py upgrade: expanding window "best" is now selected on the
-# same 2025+ live period as reverse windows — directly comparable.
 
 import os
 import sys
@@ -66,16 +63,14 @@ def load_signal_history() -> list:
             force_download=True,
         )
         with open(path) as f:
-            return json.load(f)
+            data = json.load(f)
+            return data if isinstance(data, list) else []
     except Exception:
         return []
 
 
 def load_window_summaries() -> pd.DataFrame:
-    """
-    Load all available walk-forward window summaries from HF.
-    Used to find the best-performing window to train the live signal on.
-    """
+    """Load all available walk-forward window summaries from HF."""
     frames = []
     for w_id in range(1, 15):
         try:
@@ -94,7 +89,6 @@ def load_window_summaries() -> pd.DataFrame:
     if not frames:
         return pd.DataFrame()
     df = pd.DataFrame(frames)
-    # Normalise legacy column names without dropping live_* fields
     df = df.rename(columns={
         'ftrl_total_return': 'ftrl_return',
         'agg_total_return':  'agg_return',
@@ -104,22 +98,7 @@ def load_window_summaries() -> pd.DataFrame:
 
 
 def find_best_window(summaries: pd.DataFrame) -> dict:
-    """
-    Find the best walk-forward window for the live signal.
-
-    Priority:
-      1. live_excess_return  — model evaluated on 2025+ data (same basis
-                               as reverse windows). Available after train.py
-                               upgrade. Directly comparable to reverse signal.
-      2. excess_return       — historical test-year excess (fallback for
-                               pre-upgrade summaries).
-      3. Hardcoded fallback  — full dataset if no summaries at all.
-
-    Training range: always 2008 → window's train_end (not extended to today).
-    This keeps the training regime identical to what was evaluated, avoiding
-    a silent distribution shift where the "best" window was validated on
-    2008–2015 data but we then train on 2008–2025.
-    """
+    """Find the best walk-forward window for the live signal."""
     if summaries.empty or 'excess_return' not in summaries.columns:
         print("[Best Window] No summaries — defaulting to full dataset")
         return {
@@ -129,7 +108,6 @@ def find_best_window(summaries: pd.DataFrame) -> dict:
             'train_end':   date.today().strftime('%Y-%m-%d'),
         }
 
-    # ── Choose metric ─────────────────────────────────────────────────────────
     has_live = (
         'live_excess_return' in summaries.columns and
         summaries['live_excess_return'].notna().any()
@@ -152,10 +130,10 @@ def find_best_window(summaries: pd.DataFrame) -> dict:
         metric_label = f"hist_excess={metric_val:.2%} (re-run training for live metrics)"
         basis        = f"historical test {int(best_row.get('test_year', '?'))}"
 
-    wid        = int(best_row['window_id'])
-    train_end  = str(best_row.get('train_end', f"{int(best_row.get('test_year', 2024))-1}-12-31"))
-    train_start= str(best_row.get('train_start', '2008-01-01'))
-    label      = f"W{wid:02d}: {train_start[:4]}–{train_end[:4]} (best {basis})"
+    wid         = int(best_row['window_id'])
+    train_end   = str(best_row.get('train_end', f"{int(best_row.get('test_year', 2024))-1}-12-31"))
+    train_start = str(best_row.get('train_start', '2008-01-01'))
+    label       = f"W{wid:02d}: {train_start[:4]}–{train_end[:4]} (best {basis})"
 
     print(f"[Best Window] W{wid:02d} — {metric_label}, sharpe={sharpe_val:.3f}")
     print(f"[Best Window] Training on: {train_start} → {train_end}")
@@ -178,6 +156,9 @@ def score_yesterday(prev_signal: dict, prices: pd.DataFrame,
     """
     Score yesterday's signal against actual price returns.
     Returns scored record to append to history.
+
+    FIX: Uses .loc[] instead of .get() — .get() silently returns None
+    on any timestamp mismatch (timezone differences, weekend/holiday dates).
     """
     if prev_signal is None:
         return None
@@ -198,16 +179,27 @@ def score_yesterday(prev_signal: dict, prices: pd.DataFrame,
 
         next_day = future_days[0]
 
+        # If signal_dt is not in the price index (weekend/holiday),
+        # fall back to the closest prior trading day
+        if signal_dt not in prices.index:
+            prior_days = prices.index[prices.index <= signal_dt]
+            if len(prior_days) == 0:
+                print(f"[Score] {signal_dt} before price history — skipping")
+                return None
+            signal_dt = prior_days[-1]
+            print(f"[Score] Adjusted to nearest trading day: {signal_dt.date()}")
+
         if signal_etf not in prices.columns:
+            print(f"[Score] ETF {signal_etf} not in price columns — skipping")
             return None
 
-        etf_prev  = prices[signal_etf].get(signal_dt)
-        etf_next  = prices[signal_etf].get(next_day)
-        agg_prev  = bench.get(signal_dt)
-        agg_next  = bench.get(next_day)
+        etf_prev = float(prices[signal_etf].loc[signal_dt])
+        etf_next = float(prices[signal_etf].loc[next_day])
+        agg_prev = float(bench.loc[signal_dt])
+        agg_next = float(bench.loc[next_day])
 
-        if any(v is None or (isinstance(v, float) and np.isnan(v))
-               for v in [etf_prev, etf_next, agg_prev, agg_next]):
+        if any(np.isnan(v) for v in [etf_prev, etf_next, agg_prev, agg_next]):
+            print(f"[Score] NaN prices detected — skipping")
             return None
 
         etf_return = float(etf_next / etf_prev - 1)
@@ -236,19 +228,12 @@ def score_yesterday(prev_signal: dict, prices: pd.DataFrame,
 # ── Training on best window ────────────────────────────────────────────────────
 
 def train_on_window(best_window: dict, prices: pd.DataFrame) -> tuple:
-    """
-    Train DDPG on the best walk-forward window's date range.
-    Normalisation uses training set stats only (no lookahead).
-    For inference, the full price history from train_start to today
-    is normalised with those same stats.
-    Returns (trainer, full_feat_norm).
-    """
+    """Train DDPG on the best walk-forward window's date range."""
     train_prices = prices[
         (prices.index >= best_window['train_start']) &
         (prices.index <= best_window['train_end'])
     ].copy()
 
-    # Full price history from train_start → today for inference
     full_prices = prices[
         prices.index >= best_window['train_start']
     ].copy()
@@ -280,7 +265,6 @@ def train_on_window(best_window: dict, prices: pd.DataFrame) -> tuple:
 
     env = PortfolioEnv(train_mat, train_ret)
 
-    # Cap predict runs at 30 epochs — early stopping (patience=10) still active
     cfg.MAX_EPOCHS = 30
 
     trainer = DDPGTrainer(window_id=0)
@@ -296,10 +280,7 @@ def train_on_window(best_window: dict, prices: pd.DataFrame) -> tuple:
 
 def get_signal(trainer: DDPGTrainer, feat: np.ndarray,
                best_window: dict) -> dict:
-    """
-    Run actor on the latest H-day window.
-    Returns winner-takes-all signal dict.
-    """
+    """Run actor on the latest H-day window. Returns winner-takes-all signal."""
     H = cfg.H
     if feat.shape[0] < H:
         raise ValueError(f"Not enough data for lookback: {feat.shape[0]} < {H}")
@@ -365,8 +346,15 @@ def main():
     # 3. Score yesterday's signal
     scored = score_yesterday(prev_signal, prices, bench)
     if scored:
-        signal_history.append(scored)
-        print(f"[History] Appended scored record. Total: {len(signal_history)}")
+        # Avoid duplicate entries for the same signal date
+        existing_dates = {r.get('date') for r in signal_history}
+        if scored.get('date') not in existing_dates:
+            signal_history.append(scored)
+            print(f"[History] Appended scored record. Total: {len(signal_history)}")
+        else:
+            print(f"[History] Duplicate {scored.get('date')} — skipping")
+    else:
+        print("[History] No scored record this run — not yet scoreable")
 
     signal_history = signal_history[-90:]
 
