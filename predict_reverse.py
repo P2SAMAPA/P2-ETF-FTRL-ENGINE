@@ -69,10 +69,7 @@ def load_reverse_summaries() -> pd.DataFrame:
 
 
 def find_best_window(summaries: pd.DataFrame) -> dict:
-    """
-    Find the best reverse window by excess return over AGG.
-    Falls back to window R1 (full history) if no summaries available.
-    """
+    """Find the best reverse window by excess return over AGG."""
     if summaries.empty:
         print("[Best Window] No summaries found — defaulting to R1 (2008–2024)")
         return REVERSE_WINDOWS[0]
@@ -113,14 +110,20 @@ def load_reverse_signal_history() -> list:
             force_download=True,
         )
         with open(path) as f:
-            return json.load(f)
+            data = json.load(f)
+            return data if isinstance(data, list) else []
     except Exception:
         return []
 
 
 def score_yesterday(prev_signal: dict, prices: pd.DataFrame,
                     bench: pd.Series) -> dict:
-    """Score yesterday's reverse signal against actual returns."""
+    """
+    Score yesterday's reverse signal against actual returns.
+
+    FIX: Uses .loc[] instead of .get() — .get() silently returns None
+    on any timestamp mismatch (timezone differences, weekend/holiday dates).
+    """
     if not prev_signal:
         return None
 
@@ -135,16 +138,32 @@ def score_yesterday(prev_signal: dict, prices: pd.DataFrame,
         future_days = prices.index[prices.index > signal_dt]
 
         if len(future_days) == 0:
+            print(f"[Score] No trading day after {signal_date} yet — skipping")
             return None
 
-        next_day   = future_days[0]
-        etf_prev   = prices[signal_etf].get(signal_dt)
-        etf_next   = prices[signal_etf].get(next_day)
-        agg_prev   = bench.get(signal_dt)
-        agg_next   = bench.get(next_day)
+        next_day = future_days[0]
 
-        if any(v is None or (isinstance(v, float) and np.isnan(v))
-               for v in [etf_prev, etf_next, agg_prev, agg_next]):
+        # If signal_dt is not in the price index (weekend/holiday),
+        # fall back to the closest prior trading day
+        if signal_dt not in prices.index:
+            prior_days = prices.index[prices.index <= signal_dt]
+            if len(prior_days) == 0:
+                print(f"[Score] {signal_dt} before price history — skipping")
+                return None
+            signal_dt = prior_days[-1]
+            print(f"[Score] Adjusted to nearest trading day: {signal_dt.date()}")
+
+        if signal_etf not in prices.columns:
+            print(f"[Score] ETF {signal_etf} not in price columns — skipping")
+            return None
+
+        etf_prev = float(prices[signal_etf].loc[signal_dt])
+        etf_next = float(prices[signal_etf].loc[next_day])
+        agg_prev = float(bench.loc[signal_dt])
+        agg_next = float(bench.loc[next_day])
+
+        if any(np.isnan(v) for v in [etf_prev, etf_next, agg_prev, agg_next]):
+            print(f"[Score] NaN prices detected — skipping")
             return None
 
         etf_return = float(etf_next / etf_prev - 1)
@@ -177,7 +196,6 @@ def train_on_window(window: dict, prices: pd.DataFrame) -> tuple:
         (prices.index <= window['train_end'])
     ].copy()
 
-    # For inference we also need features up to today
     full_prices = prices[
         prices.index >= window['train_start']
     ].copy()
@@ -185,11 +203,9 @@ def train_on_window(window: dict, prices: pd.DataFrame) -> tuple:
     print(f"\n[Train] {window['label']} — "
           f"{len(train_prices)} training days")
 
-    # Features on training set for normalisation stats
     train_feat = compute_features(train_prices)
     full_feat  = compute_features(full_prices)
 
-    # Normalise using training stats only
     mean = train_feat.mean(axis=(0, 2), keepdims=True)
     std  = train_feat.std(axis=(0, 2),  keepdims=True)
     std  = np.where(std < 1e-8, 1.0, std)
@@ -206,11 +222,9 @@ def train_on_window(window: dict, prices: pd.DataFrame) -> tuple:
 
     env = PortfolioEnv(train_mat, train_ret)
 
-    # Cap predict runs at 30 epochs — full 50 is too slow on large datasets.
-    # Early stopping patience (10) unchanged so model can still bail early.
     cfg.MAX_EPOCHS = 30
 
-    trainer = DDPGTrainer(window_id=200)   # 200 = reverse predict run
+    trainer = DDPGTrainer(window_id=200)
     trainer.train(env, "/tmp/ftrl_reverse_predict")
     trainer.load_best("/tmp/ftrl_reverse_predict")
     trainer.actor.eval()
@@ -225,8 +239,8 @@ def get_signal(trainer: DDPGTrainer, feat: np.ndarray,
     if feat.shape[0] < H:
         raise ValueError(f"Not enough data: {feat.shape[0]} < {H}")
 
-    latest  = feat[-H:].transpose(1, 0, 2)           # (C, H, W)
-    mat_t   = torch.FloatTensor(latest).unsqueeze(0)  # (1, C, H, W)
+    latest  = feat[-H:].transpose(1, 0, 2)
+    mat_t   = torch.FloatTensor(latest).unsqueeze(0)
     wts_t   = torch.ones(1, cfg.W) / cfg.W
 
     with torch.no_grad():
@@ -281,10 +295,21 @@ def main():
     signal_history = load_reverse_signal_history()
 
     print(f"\n[History] {len(signal_history)} previous reverse signals")
+    if prev_signal:
+        print(f"[Yesterday] signal={prev_signal.get('signal')} "
+              f"date={prev_signal.get('date')}")
 
     scored = score_yesterday(prev_signal, prices, bench)
     if scored:
-        signal_history.append(scored)
+        # Avoid duplicate entries for the same signal date
+        existing_dates = {r.get('date') for r in signal_history}
+        if scored.get('date') not in existing_dates:
+            signal_history.append(scored)
+            print(f"[History] Appended scored record. Total: {len(signal_history)}")
+        else:
+            print(f"[History] Duplicate {scored.get('date')} — skipping")
+    else:
+        print("[History] No scored record this run — not yet scoreable")
 
     signal_history = signal_history[-90:]
 
