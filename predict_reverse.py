@@ -9,6 +9,7 @@ import json
 import numpy as np
 import pandas as pd
 import torch
+import pandas_market_calendars as mcal
 from datetime import datetime, date
 from huggingface_hub import HfApi, hf_hub_download
 
@@ -34,6 +35,21 @@ REVERSE_WINDOWS = [
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def next_trading_day(dt: pd.Timestamp) -> pd.Timestamp:
+    """Return the next NYSE trading day after the given date."""
+    nyse = mcal.get_calendar("NYSE")
+    schedule = nyse.schedule(start_date=dt, end_date=dt + pd.Timedelta(days=10))
+    trading_days = schedule.index
+    next_days = trading_days[trading_days > dt]
+    if len(next_days) > 0:
+        return next_days[0]
+    # fallback (weekend only)
+    d = dt + pd.Timedelta(days=1)
+    while d.weekday() >= 5:
+        d += pd.Timedelta(days=1)
+    return d
+
 
 def push_to_hf(local_path: str, repo_path: str):
     api = HfApi(token=cfg.HF_TOKEN)
@@ -233,7 +249,7 @@ def train_on_window(window: dict, prices: pd.DataFrame) -> tuple:
 
 
 def get_signal(trainer: DDPGTrainer, feat: np.ndarray,
-               best_window: dict) -> dict:
+               best_window: dict, signal_date: pd.Timestamp) -> dict:
     """Run actor on latest H-day window, return winner-takes-all signal."""
     H = cfg.H
     if feat.shape[0] < H:
@@ -254,7 +270,7 @@ def get_signal(trainer: DDPGTrainer, feat: np.ndarray,
                    for i in range(cfg.W)}
 
     result = {
-        'date':         date.today().strftime('%Y-%m-%d'),
+        'date':         signal_date.strftime('%Y-%m-%d'),
         'signal':       signal,
         'confidence':   round(confidence, 4),
         'raw_weights':  raw_weights,
@@ -286,11 +302,16 @@ def main():
     bench  = load_benchmark_prices()
     prices, bench = align_dates(prices, bench)
 
-    # 2. Find best reverse window from summaries
+    # 2. Compute next trading day after last price date
+    last_data_date = prices.index[-1]
+    signal_date    = next_trading_day(last_data_date)
+    print(f"[Signal Date] Last data: {last_data_date.date()} → Next trading: {signal_date.date()}")
+
+    # 3. Find best reverse window from summaries
     summaries   = load_reverse_summaries()
     best_window = find_best_window(summaries)
 
-    # 3. Load history and score yesterday
+    # 4. Load history and score yesterday
     prev_signal    = load_latest_reverse_signal()
     signal_history = load_reverse_signal_history()
 
@@ -301,7 +322,6 @@ def main():
 
     scored = score_yesterday(prev_signal, prices, bench)
     if scored:
-        # Avoid duplicate entries for the same signal date
         existing_dates = {r.get('date') for r in signal_history}
         if scored.get('date') not in existing_dates:
             signal_history.append(scored)
@@ -313,13 +333,13 @@ def main():
 
     signal_history = signal_history[-90:]
 
-    # 4. Train on best window
+    # 5. Train on best window
     trainer, feat = train_on_window(best_window, prices)
 
-    # 5. Generate signal
-    signal = get_signal(trainer, feat, best_window)
+    # 6. Generate signal
+    signal = get_signal(trainer, feat, best_window, signal_date)
 
-    # 6. Save and push
+    # 7. Save and push
     os.makedirs("/tmp/ftrl_reverse_predict", exist_ok=True)
 
     signal_path  = "/tmp/ftrl_reverse_predict/latest_reverse_signal.json"
