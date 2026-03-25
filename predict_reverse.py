@@ -132,16 +132,13 @@ def load_reverse_signal_history() -> list:
         return []
 
 
-def score_yesterday(prev_signal: dict, prices: pd.DataFrame,
-                    bench: pd.Series) -> dict:
+def score_signal(record: dict, prices: pd.DataFrame, bench: pd.Series) -> dict:
     """
-    Score yesterday's reverse signal against actual returns.
+    Score a single signal record. Returns updated record with actual_return, etc.
+    Returns None if not scoreable.
     """
-    if not prev_signal:
-        return None
-
-    signal_date = prev_signal.get('date')
-    signal_etf  = prev_signal.get('signal')
+    signal_date = record.get('date')
+    signal_etf  = record.get('signal')
 
     if not signal_date or not signal_etf:
         return None
@@ -183,8 +180,8 @@ def score_yesterday(prev_signal: dict, prices: pd.DataFrame,
         agg_return = float(agg_next / agg_prev - 1)
         beats      = etf_return > agg_return
 
-        scored = {
-            **prev_signal,
+        scored_record = {
+            **record,
             'actual_return': round(etf_return, 6),
             'agg_return':    round(agg_return, 6),
             'excess_return': round(etf_return - agg_return, 6),
@@ -195,11 +192,32 @@ def score_yesterday(prev_signal: dict, prices: pd.DataFrame,
         print(f"[Score] {signal_date} reverse signal={signal_etf} "
               f"actual={etf_return:.2%} AGG={agg_return:.2%} "
               f"{'✓' if beats else '✗'}")
-        return scored
+        return scored_record
 
     except Exception as e:
-        print(f"[Score] Error: {e}")
+        print(f"[Score] Error scoring {signal_date}: {e}")
         return None
+
+
+def score_unscored_signals(history: list, prices: pd.DataFrame,
+                           bench: pd.Series) -> tuple[list, bool]:
+    """
+    Go through history and score any records that don't have 'actual_return'.
+    Returns (updated_history, changed_flag).
+    """
+    changed = False
+    updated = []
+    for rec in history:
+        if 'actual_return' not in rec or rec.get('actual_return') is None:
+            scored = score_signal(rec, prices, bench)
+            if scored is not None:
+                updated.append(scored)
+                changed = True
+            else:
+                updated.append(rec)   # keep as is
+        else:
+            updated.append(rec)
+    return updated, changed
 
 
 def train_on_window(window: dict, prices: pd.DataFrame) -> tuple:
@@ -308,7 +326,7 @@ def main():
     summaries   = load_reverse_summaries()
     best_window = find_best_window(summaries)
 
-    # 4. Load history and score yesterday
+    # 4. Load history and score unscored signals
     prev_signal    = load_latest_reverse_signal()
     signal_history = load_reverse_signal_history()
 
@@ -325,18 +343,10 @@ def main():
         except Exception:
             pass
 
-    scored = score_yesterday(prev_signal, prices, bench)
-    if scored:
-        existing_dates = {r.get('date') for r in signal_history}
-        if scored.get('date') not in existing_dates:
-            signal_history.append(scored)
-            print(f"[History] Appended scored record. Total: {len(signal_history)}")
-        else:
-            print(f"[History] Duplicate {scored.get('date')} — skipping")
-    else:
-        print("[History] No scored record this run — not yet scoreable")
-
-    signal_history = signal_history[-90:]
+    updated_history, changed = score_unscored_signals(signal_history, prices, bench)
+    if changed:
+        signal_history = updated_history
+        print(f"[History] Scored some previously unscored records. Total: {len(signal_history)}")
 
     # 5. Train on best window
     trainer, feat = train_on_window(best_window, prices)
