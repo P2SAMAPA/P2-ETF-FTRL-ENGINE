@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 import torch
 import pandas_market_calendars as mcal
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from huggingface_hub import HfApi, hf_hub_download
 
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
@@ -172,9 +172,6 @@ def score_yesterday(prev_signal: dict, prices: pd.DataFrame,
     """
     Score yesterday's signal against actual price returns.
     Returns scored record to append to history.
-
-    FIX: Uses .loc[] instead of .get() — .get() silently returns None
-    on any timestamp mismatch (timezone differences, weekend/holiday dates).
     """
     if prev_signal is None:
         return None
@@ -363,6 +360,14 @@ def main():
         print(f"[Yesterday] signal={prev_signal.get('signal')} "
               f"date={prev_signal.get('date')} "
               f"trained_on={prev_signal.get('trained_on', '?')}")
+
+        # Warn if the loaded signal is stale (> 5 days old)
+        try:
+            loaded_date = pd.Timestamp(prev_signal.get('date'))
+            if (datetime.now().date() - loaded_date.date()).days > 5:
+                print(f"[WARNING] Loaded latest signal is stale (date={loaded_date.date()})")
+        except Exception:
+            pass
 
     # 4. Score yesterday's signal
     scored = score_yesterday(prev_signal, prices, bench)
