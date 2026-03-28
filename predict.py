@@ -27,15 +27,32 @@ from ddpg import DDPGTrainer
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def next_trading_day(dt: pd.Timestamp) -> pd.Timestamp:
-    """Return the next NYSE trading day after the given date."""
+    """
+    Return the next NYSE trading day after the given date.
+    Uses a wide search window and validates the result is strictly after dt
+    and is a genuine trading day (not a weekend or holiday).
+    """
     nyse = mcal.get_calendar("NYSE")
-    schedule = nyse.schedule(start_date=dt, end_date=dt + pd.Timedelta(days=10))
-    trading_days = schedule.index
-    next_days = trading_days[trading_days > dt]
+    # Normalise dt to midnight to avoid any time-of-day issues
+    dt_date = pd.Timestamp(dt.date())
+    search_end = dt_date + pd.Timedelta(days=14)
+    schedule = nyse.schedule(
+        start_date=dt_date.strftime("%Y-%m-%d"),
+        end_date=search_end.strftime("%Y-%m-%d"),
+    )
+    trading_days = pd.DatetimeIndex(schedule.index).normalize()
+    next_days = trading_days[trading_days > dt_date]
     if len(next_days) > 0:
-        return next_days[0]
-    # fallback (weekend only)
-    d = dt + pd.Timedelta(days=1)
+        result = next_days[0]
+        # Sanity check — must not be a weekend
+        if result.weekday() >= 5:
+            raise ValueError(
+                f"next_trading_day returned a weekend: {result.date()} "
+                f"(from dt={dt.date()}). Check NYSE calendar data."
+            )
+        return result
+    # Ultimate fallback — skip weekends only
+    d = dt_date + pd.Timedelta(days=1)
     while d.weekday() >= 5:
         d += pd.Timedelta(days=1)
     return d
@@ -366,7 +383,17 @@ def main():
     # 2. Compute next trading day after last price date
     last_data_date = prices.index[-1]
     signal_date    = next_trading_day(last_data_date)
-    print(f"[Signal Date] Last data: {last_data_date.date()} → Next trading: {signal_date.date()}")
+    print(f"[Signal Date] Last data: {last_data_date.date()} "
+          f"→ Next trading: {signal_date.date()} "
+          f"(weekday: {signal_date.strftime('%A')})")
+
+    # Sanity check — if signal_date is a weekend something is wrong
+    if signal_date.weekday() >= 5:
+        raise RuntimeError(
+            f"Signal date {signal_date.date()} is a "
+            f"{'Saturday' if signal_date.weekday()==5 else 'Sunday'}. "
+            "Check NYSE calendar and price data alignment."
+        )
 
     # 3. Load yesterday's signal and history
     prev_signal    = load_latest_signal()
@@ -382,7 +409,8 @@ def main():
         try:
             loaded_date = pd.Timestamp(prev_signal.get('date'))
             if (datetime.now().date() - loaded_date.date()).days > 5:
-                print(f"[WARNING] Loaded latest signal is stale (date={loaded_date.date()})")
+                print(f"[WARNING] Loaded latest signal is stale "
+                      f"(date={loaded_date.date()})")
         except Exception:
             pass
 
@@ -390,7 +418,8 @@ def main():
     updated_history, changed = score_unscored_signals(signal_history, prices, bench)
     if changed:
         signal_history = updated_history
-        print(f"[History] Scored some previously unscored records. Total: {len(signal_history)}")
+        print(f"[History] Scored some previously unscored records. "
+              f"Total: {len(signal_history)}")
 
     # 5. Find best walk-forward window
     summaries   = load_window_summaries()
@@ -401,6 +430,16 @@ def main():
 
     # 7. Generate today's signal
     signal = get_signal(trainer, feat, best_window, signal_date)
+
+    # ── FIX: append today's signal to history before saving ──────────────────
+    # Check if a record for this signal_date already exists to avoid duplicates
+    existing_dates = {rec.get('date') for rec in signal_history}
+    if signal['date'] not in existing_dates:
+        signal_history.append(signal)
+        print(f"[History] Appended today's signal ({signal['date']}) to history. "
+              f"Total: {len(signal_history)} records")
+    else:
+        print(f"[History] Signal for {signal['date']} already in history — skipping duplicate")
 
     # 8. Save and push
     os.makedirs("/tmp/ftrl_predict", exist_ok=True)
