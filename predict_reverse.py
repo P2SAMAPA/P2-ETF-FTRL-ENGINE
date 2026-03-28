@@ -37,15 +37,31 @@ REVERSE_WINDOWS = [
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def next_trading_day(dt: pd.Timestamp) -> pd.Timestamp:
-    """Return the next NYSE trading day after the given date."""
+    """
+    Return the next NYSE trading day after the given date.
+    Normalises dt to midnight to avoid timezone/time-of-day drift
+    that can cause the calendar lookup to return the wrong day.
+    """
     nyse = mcal.get_calendar("NYSE")
-    schedule = nyse.schedule(start_date=dt, end_date=dt + pd.Timedelta(days=10))
-    trading_days = schedule.index
-    next_days = trading_days[trading_days > dt]
+    # Normalise to midnight
+    dt_date    = pd.Timestamp(dt.date())
+    search_end = dt_date + pd.Timedelta(days=14)
+    schedule   = nyse.schedule(
+        start_date=dt_date.strftime("%Y-%m-%d"),
+        end_date=search_end.strftime("%Y-%m-%d"),
+    )
+    trading_days = pd.DatetimeIndex(schedule.index).normalize()
+    next_days    = trading_days[trading_days > dt_date]
     if len(next_days) > 0:
-        return next_days[0]
-    # fallback (weekend only)
-    d = dt + pd.Timedelta(days=1)
+        result = next_days[0]
+        if result.weekday() >= 5:
+            raise ValueError(
+                f"next_trading_day returned a weekend: {result.date()} "
+                f"(from dt={dt.date()}). Check NYSE calendar data."
+            )
+        return result
+    # Ultimate fallback — skip weekends only
+    d = dt_date + pd.Timedelta(days=1)
     while d.weekday() >= 5:
         d += pd.Timedelta(days=1)
     return d
@@ -214,7 +230,7 @@ def score_unscored_signals(history: list, prices: pd.DataFrame,
                 updated.append(scored)
                 changed = True
             else:
-                updated.append(rec)   # keep as is
+                updated.append(rec)
         else:
             updated.append(rec)
     return updated, changed
@@ -320,7 +336,17 @@ def main():
     # 2. Compute next trading day after last price date
     last_data_date = prices.index[-1]
     signal_date    = next_trading_day(last_data_date)
-    print(f"[Signal Date] Last data: {last_data_date.date()} → Next trading: {signal_date.date()}")
+    print(f"[Signal Date] Last data: {last_data_date.date()} "
+          f"→ Next trading: {signal_date.date()} "
+          f"(weekday: {signal_date.strftime('%A')})")
+
+    # Sanity check — if signal_date is a weekend something is wrong
+    if signal_date.weekday() >= 5:
+        raise RuntimeError(
+            f"Signal date {signal_date.date()} is a "
+            f"{'Saturday' if signal_date.weekday()==5 else 'Sunday'}. "
+            "Check NYSE calendar and price data alignment."
+        )
 
     # 3. Find best reverse window from summaries
     summaries   = load_reverse_summaries()
@@ -335,24 +361,35 @@ def main():
         print(f"[Yesterday] signal={prev_signal.get('signal')} "
               f"date={prev_signal.get('date')}")
 
-        # Warn if the loaded signal is stale (> 5 days old)
         try:
             loaded_date = pd.Timestamp(prev_signal.get('date'))
             if (datetime.now().date() - loaded_date.date()).days > 5:
-                print(f"[WARNING] Loaded latest reverse signal is stale (date={loaded_date.date()})")
+                print(f"[WARNING] Loaded latest reverse signal is stale "
+                      f"(date={loaded_date.date()})")
         except Exception:
             pass
 
     updated_history, changed = score_unscored_signals(signal_history, prices, bench)
     if changed:
         signal_history = updated_history
-        print(f"[History] Scored some previously unscored records. Total: {len(signal_history)}")
+        print(f"[History] Scored some previously unscored records. "
+              f"Total: {len(signal_history)}")
 
     # 5. Train on best window
     trainer, feat = train_on_window(best_window, prices)
 
     # 6. Generate signal
     signal = get_signal(trainer, feat, best_window, signal_date)
+
+    # ── FIX: append today's signal to history before saving ──────────────────
+    existing_dates = {rec.get('date') for rec in signal_history}
+    if signal['date'] not in existing_dates:
+        signal_history.append(signal)
+        print(f"[History] Appended today's reverse signal ({signal['date']}) "
+              f"to history. Total: {len(signal_history)} records")
+    else:
+        print(f"[History] Reverse signal for {signal['date']} already in "
+              f"history — skipping duplicate")
 
     # 7. Save and push
     os.makedirs("/tmp/ftrl_reverse_predict", exist_ok=True)
@@ -371,6 +408,7 @@ def main():
     print(f"\n[Done] Reverse signal: {signal['signal']} "
           f"({signal['confidence']:.1%}) | "
           f"Trained on: {best_window['label']}")
+    print(f"[Done] History: {len(signal_history)} records saved")
 
 
 if __name__ == "__main__":
