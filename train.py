@@ -1,13 +1,6 @@
 # train.py — GitHub Actions entry point for one walk-forward window
 # Usage: python src/train.py --window <1-14>
-#
-# Each window:
-#   1. Trains on historical window (e.g. 2008–2015)
-#   2. Backtests on historical test year (e.g. 2016) → excess_return
-#   3. Evaluates same trained model on live 2025+ data → live_excess_return
-#
-# predict.py picks best window by live_excess_return, making expanding windows
-# directly comparable to reverse windows (both optimised on live 2025+ data).
+# The ASSET_GROUP environment variable must be set to "FI" or "EQUITY".
 
 import argparse
 import json
@@ -153,7 +146,7 @@ def main():
 
     window = next(w for w in cfg.WINDOWS if w['id'] == wid)
     print(f"\n{'='*60}")
-    print(f"FTRL Training — Window {wid:02d}")
+    print(f"FTRL Training — {cfg.ASSET_GROUP} group — Window {wid:02d}")
     print(f"Train: {window['train_start']} → {window['train_end']}")
     print(f"Test:  {window['test_year']}  +  Live {LIVE_START}→today")
     print(f"{'='*60}\n")
@@ -268,35 +261,35 @@ def main():
     if hist_daily:
         hist_df = pd.DataFrame(hist_daily)
         hist_df['test_year'] = window['test_year']
-        daily_path = f"/tmp/ftrl_results/window_{wid:02d}_daily.csv"
+        daily_path = f"/tmp/ftrl_results/window_{wid:02d}{cfg.OUTPUT_SUFFIX}_daily.csv"
         hist_df.to_csv(daily_path, index=False)
-        push_to_hf(daily_path, f"results/window_{wid:02d}_daily.csv")
+        push_to_hf(daily_path, f"results/window_{wid:02d}{cfg.OUTPUT_SUFFIX}_daily.csv")
 
     # Live daily CSV (separate file for potential future dashboard use)
     if live_daily:
         live_df   = pd.DataFrame(live_daily)
-        live_path = f"/tmp/ftrl_results/window_{wid:02d}_live_daily.csv"
+        live_path = f"/tmp/ftrl_results/window_{wid:02d}{cfg.OUTPUT_SUFFIX}_live_daily.csv"
         live_df.to_csv(live_path, index=False)
-        push_to_hf(live_path, f"results/window_{wid:02d}_live_daily.csv")
+        push_to_hf(live_path, f"results/window_{wid:02d}{cfg.OUTPUT_SUFFIX}_live_daily.csv")
 
     # Summary JSON
-    summary_path = f"/tmp/ftrl_results/window_{wid:02d}_summary.json"
+    summary_path = f"/tmp/ftrl_results/window_{wid:02d}{cfg.OUTPUT_SUFFIX}_summary.json"
     with open(summary_path, 'w') as f:
         json.dump(summary, f, indent=2)
 
     # Training log
-    log_path = f"/tmp/ftrl_results/window_{wid:02d}_training_log.json"
+    log_path = f"/tmp/ftrl_results/window_{wid:02d}{cfg.OUTPUT_SUFFIX}_training_log.json"
     with open(log_path, 'w') as f:
         json.dump(train_log, f, indent=2)
 
     # Model checkpoint
-    best_model_path = os.path.join(local_model_dir, f"window_{wid:02d}_best.pt")
+    best_model_path = os.path.join(local_model_dir, f"window_{wid:02d}{cfg.OUTPUT_SUFFIX}_best.pt")
 
-    push_to_hf(summary_path,    f"results/window_{wid:02d}_summary.json")
-    push_to_hf(log_path,        f"results/window_{wid:02d}_training_log.json")
-    push_to_hf(best_model_path, f"models/window_{wid:02d}_best.pt")
+    push_to_hf(summary_path,    f"results/window_{wid:02d}{cfg.OUTPUT_SUFFIX}_summary.json")
+    push_to_hf(log_path,        f"results/window_{wid:02d}{cfg.OUTPUT_SUFFIX}_training_log.json")
+    push_to_hf(best_model_path, f"models/window_{wid:02d}{cfg.OUTPUT_SUFFIX}_best.pt")
 
-    print(f"\n[Done] Window {wid:02d} complete. All outputs pushed to HF.")
+    print(f"\n[Done] Window {wid:02d} ({cfg.ASSET_GROUP}) complete. All outputs pushed to HF.")
 
 
 if __name__ == "__main__":
