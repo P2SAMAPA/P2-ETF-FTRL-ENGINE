@@ -65,7 +65,7 @@ def main():
 
     window = REVERSE_WINDOWS[wid - 1]
     print(f"\n{'='*60}")
-    print(f"FTRL Reverse Training — Window R{wid:02d}")
+    print(f"FTRL Reverse Training — {cfg.ASSET_GROUP} group — Window R{wid:02d}")
     print(f"Train: {window['train_start']} → {window['train_end']}")
     print(f"Test:  {window['test_start']} → present")
     print(f"{'='*60}\n")
@@ -125,7 +125,7 @@ def main():
     print(f"[train] matrices={train_mat.shape} returns={train_ret.shape}")
 
     # ── 4. Train ──────────────────────────────────────────────────────────────
-    local_model_dir = f"/tmp/ftrl_reverse_models"
+    local_model_dir = f"/tmp/ftrl_reverse_models{cfg.OUTPUT_SUFFIX}"
     train_env = PortfolioEnv(train_mat, train_ret)
     trainer   = DDPGTrainer(window_id=100 + wid)  # offset to avoid collision
     train_log = trainer.train(train_env, local_model_dir)
@@ -234,31 +234,31 @@ def main():
     import pandas as pd
     os.makedirs("/tmp/ftrl_reverse_results", exist_ok=True)
 
-    summary_path = f"/tmp/ftrl_reverse_results/reverse_window_{wid:02d}_summary.json"
-    log_path     = f"/tmp/ftrl_reverse_results/reverse_window_{wid:02d}_training_log.json"
+    summary_path = f"/tmp/ftrl_reverse_results/reverse_window_{wid:02d}{cfg.OUTPUT_SUFFIX}_summary.json"
+    log_path     = f"/tmp/ftrl_reverse_results/reverse_window_{wid:02d}{cfg.OUTPUT_SUFFIX}_training_log.json"
 
     with open(summary_path, 'w') as f:
         json.dump(summary, f, indent=2)
     with open(log_path, 'w') as f:
         json.dump(train_log, f, indent=2)
 
-    push_to_hf(summary_path, f"results/reverse_window_{wid:02d}_summary.json")
-    push_to_hf(log_path,     f"results/reverse_window_{wid:02d}_training_log.json")
+    push_to_hf(summary_path, f"results/reverse_window_{wid:02d}{cfg.OUTPUT_SUFFIX}_summary.json")
+    push_to_hf(log_path,     f"results/reverse_window_{wid:02d}{cfg.OUTPUT_SUFFIX}_training_log.json")
 
     if daily_results:
         daily_df   = pd.DataFrame(daily_results)
-        daily_path = f"/tmp/ftrl_reverse_results/reverse_window_{wid:02d}_daily.csv"
+        daily_path = f"/tmp/ftrl_reverse_results/reverse_window_{wid:02d}{cfg.OUTPUT_SUFFIX}_daily.csv"
         daily_df.to_csv(daily_path, index=False)
-        push_to_hf(daily_path, f"results/reverse_window_{wid:02d}_daily.csv")
+        push_to_hf(daily_path, f"results/reverse_window_{wid:02d}{cfg.OUTPUT_SUFFIX}_daily.csv")
 
     best_model_path = os.path.join(
-        local_model_dir, f"window_{100+wid:02d}_best.pt"
+        local_model_dir, f"window_{100+wid:02d}{cfg.OUTPUT_SUFFIX}_best.pt"
     )
     if os.path.exists(best_model_path):
         push_to_hf(best_model_path,
-                   f"models/reverse_window_{wid:02d}_best.pt")
+                   f"models/reverse_window_{wid:02d}{cfg.OUTPUT_SUFFIX}_best.pt")
 
-    print(f"\n[Done] Reverse Window R{wid:02d} complete. All outputs pushed to HF.")
+    print(f"\n[Done] Reverse Window R{wid:02d} ({cfg.ASSET_GROUP}) complete. All outputs pushed to HF.")
 
 
 if __name__ == "__main__":
