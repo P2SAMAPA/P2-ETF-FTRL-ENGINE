@@ -25,7 +25,7 @@ def compute_features(prices: pd.DataFrame) -> np.ndarray:
         features : ndarray shape (T, C, W)
                    T = trading days
                    C = 4 features
-                   W = 6 assets
+                   W = number of assets (now 18)
     """
     T, W = prices.shape
     assert W == cfg.W, f"Expected {cfg.W} assets, got {W}"
@@ -126,10 +126,10 @@ if __name__ == "__main__":
     print(f"Prices shape: {prices.shape}")
 
     feat = compute_features(prices)
-    print(f"Features shape: {feat.shape}  — expected (T, 4, 6)")
+    print(f"Features shape: {feat.shape}  — expected (T, 4, {cfg.W})")
 
     mats = build_price_matrices(feat)
-    print(f"Price matrices shape: {mats.shape}  — expected (T-40, 4, 40, 6)")
+    print(f"Price matrices shape: {mats.shape}  — expected (T-{cfg.H}, 4, {cfg.H}, {cfg.W})")
 
     print("\n── Feature stats (should be small, centred near 0) ──")
     for i, name in enumerate(['Return', 'Vol5d', 'VolRatio', 'Mom20d']):
