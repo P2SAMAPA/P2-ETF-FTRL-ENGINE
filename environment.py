@@ -20,6 +20,8 @@ class PortfolioEnv:
     State  : price matrix of shape (C, H, W) + previous weights (W,)
     Action : portfolio weight vector (W,) — softmax output from actor
     Reward : composite risk-aware reward (return / drawdown / turnover)
+
+    W = number of assets (now 18 ETFs).
     """
 
     def __init__(self,
