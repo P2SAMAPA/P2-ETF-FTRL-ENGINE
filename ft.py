@@ -23,7 +23,7 @@ class FinancialTransformer(nn.Module):
       4. Hadamard product with calibration weights
       5. Softmax → portfolio weights (B, W)
 
-    Input:  price matrix (B, C, H, W)
+    Input:  price matrix (B, C, H, W) where W = number of assets (now 18)
     Output: portfolio weights (B, W) — sums to 1, all >= 0
     """
 
