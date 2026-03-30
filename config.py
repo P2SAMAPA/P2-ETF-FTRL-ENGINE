@@ -7,12 +7,25 @@ HF_DATASET_REPO = os.environ.get("HF_DATASET_REPO", "P2SAMAPA/p2-etf-ftrl-engine
 HF_TOKEN        = os.environ.get("HF_TOKEN", "")
 ETF_FILE        = "data/etf_price.parquet"
 BENCH_FILE      = "data/bench_price.parquet"
-ASSETS          = ['TLT', 'LQD', 'HYG', 'VNQ', 'GLD', 'SLV']
+
+# ── Asset Universe ────────────────────────────────────────────────────────────
+# Fixed income ETFs (original set)
+FI_ETFS = ['TLT', 'LQD', 'HYG', 'VNQ', 'GLD', 'SLV']
+
+# Equity ETFs (new module)
+EQUITY_ETFS = [
+    "QQQ", "XLK", "XLF", "XLE", "XLV", "XLI",
+    "XLY", "XLP", "XLU", "XME", "GDX", "IWM"
+]
+
+# Combined list used by the pipeline
+ASSETS = FI_ETFS + EQUITY_ETFS
+W      = len(ASSETS)                # now 18
+
 BENCHMARK       = 'AGG'
 START_DATE      = '2008-01-02'
 
 # ── Feature engineering ───────────────────────────────────────────────────────
-W               = 6     # number of assets
 H               = 40    # lookback window in trading days
 C               = 4     # features per asset per day
 VOL_SHORT       = 5
