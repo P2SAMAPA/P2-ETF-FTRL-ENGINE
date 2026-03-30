@@ -1,0 +1,25 @@
+name: Daily FTRL Equity Signal
+
+on:
+  schedule:
+    - cron: '0 21 * * 1-5'   # Mon–Fri 21:00 UTC
+  workflow_dispatch:
+
+jobs:
+  signal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    env:
+      HF_TOKEN:        ${{ secrets.HF_TOKEN }}
+      HF_SOURCE_REPO:  ${{ secrets.HF_SOURCE_REPO }}
+      HF_DATASET_REPO: ${{ secrets.HF_DATASET_REPO }}
+      ASSET_GROUP:     "EQUITY"
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - run: python predict.py
