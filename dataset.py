@@ -11,7 +11,7 @@ import config as cfg
 def load_etf_prices() -> pd.DataFrame:
     """
     Load ETF prices from HF source repo.
-    Returns DataFrame indexed by Date, columns = ASSETS (6 ETFs).
+    Returns DataFrame indexed by Date, columns = ASSETS (18 ETFs).
     Total return adjusted prices confirmed from data inspection.
     """
     path = hf_hub_download(
@@ -29,7 +29,7 @@ def load_etf_prices() -> pd.DataFrame:
     df.index = pd.to_datetime(df.index)
     df.index.name = 'Date'
 
-    # Keep only our 6 assets — drop VCIT and anything else
+    # Keep only our assets — drop any extras like VCIT
     df = df[cfg.ASSETS].copy()
 
     # Filter from START_DATE
