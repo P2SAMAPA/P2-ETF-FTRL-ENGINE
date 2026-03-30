@@ -1,4 +1,4 @@
-# predict.py — Daily live signal generation
+# predict.py — Daily live signal generation (supports asset group)
 # 1. Scores yesterday's signal against actual returns
 # 2. Finds best walk-forward window by LIVE 2025+ excess return
 #    (falls back to historical excess if live metrics not yet available)
@@ -74,7 +74,7 @@ def load_latest_signal() -> dict:
     try:
         path = hf_hub_download(
             repo_id=cfg.HF_DATASET_REPO,
-            filename="results/latest_signal.json",
+            filename=f"results/latest_signal{cfg.OUTPUT_SUFFIX}.json",
             repo_type="dataset",
             token=cfg.HF_TOKEN if cfg.HF_TOKEN else None,
             force_download=True,
@@ -90,7 +90,7 @@ def load_signal_history() -> list:
     try:
         path = hf_hub_download(
             repo_id=cfg.HF_DATASET_REPO,
-            filename="results/signal_history.json",
+            filename=f"results/signal_history{cfg.OUTPUT_SUFFIX}.json",
             repo_type="dataset",
             token=cfg.HF_TOKEN if cfg.HF_TOKEN else None,
             force_download=True,
@@ -109,7 +109,7 @@ def load_window_summaries() -> pd.DataFrame:
         try:
             path = hf_hub_download(
                 repo_id=cfg.HF_DATASET_REPO,
-                filename=f"results/window_{w_id:02d}_summary.json",
+                filename=f"results/window_{w_id:02d}{cfg.OUTPUT_SUFFIX}_summary.json",
                 repo_type="dataset",
                 token=cfg.HF_TOKEN if cfg.HF_TOKEN else None,
                 force_download=True,
@@ -371,7 +371,7 @@ def get_signal(trainer: DDPGTrainer, feat: np.ndarray,
 
 def main():
     print("\n" + "="*60)
-    print("FTRL Daily Signal Generator")
+    print(f"FTRL Daily Signal Generator — {cfg.ASSET_GROUP} group")
     print(f"Run date: {date.today()}")
     print("="*60)
 
@@ -431,8 +431,7 @@ def main():
     # 7. Generate today's signal
     signal = get_signal(trainer, feat, best_window, signal_date)
 
-    # ── FIX: append today's signal to history before saving ──────────────────
-    # Check if a record for this signal_date already exists to avoid duplicates
+    # Append today's signal to history (avoid duplicates)
     existing_dates = {rec.get('date') for rec in signal_history}
     if signal['date'] not in existing_dates:
         signal_history.append(signal)
@@ -444,16 +443,16 @@ def main():
     # 8. Save and push
     os.makedirs("/tmp/ftrl_predict", exist_ok=True)
 
-    signal_path  = "/tmp/ftrl_predict/latest_signal.json"
-    history_path = "/tmp/ftrl_predict/signal_history.json"
+    signal_path  = f"/tmp/ftrl_predict/latest_signal{cfg.OUTPUT_SUFFIX}.json"
+    history_path = f"/tmp/ftrl_predict/signal_history{cfg.OUTPUT_SUFFIX}.json"
 
     with open(signal_path, 'w') as f:
         json.dump(signal, f, indent=2)
     with open(history_path, 'w') as f:
         json.dump(signal_history, f, indent=2)
 
-    push_to_hf(signal_path,  "results/latest_signal.json")
-    push_to_hf(history_path, "results/signal_history.json")
+    push_to_hf(signal_path,  f"results/latest_signal{cfg.OUTPUT_SUFFIX}.json")
+    push_to_hf(history_path, f"results/signal_history{cfg.OUTPUT_SUFFIX}.json")
 
     print(f"\n[Done] Signal for {signal['date']}: "
           f"{signal['signal']} ({signal['confidence']:.1%} confidence)")
