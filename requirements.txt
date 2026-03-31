@@ -1,4 +1,5 @@
 # Streamlit app dependencies (no torch — dashboard only reads data)
+torch>=2.0.0
 numpy>=1.26.4
 pandas>=2.2.4
 huggingface-hub>=0.23.4
