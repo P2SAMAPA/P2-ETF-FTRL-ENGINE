@@ -33,18 +33,16 @@ def next_trading_day(dt: pd.Timestamp) -> pd.Timestamp:
     and is a genuine trading day (not a weekend or holiday).
     """
     nyse = mcal.get_calendar("NYSE")
-    # Normalise dt to midnight to avoid any time-of-day issues
-    dt_date = pd.Timestamp(dt.date())
+    dt_date    = pd.Timestamp(dt.date())
     search_end = dt_date + pd.Timedelta(days=14)
-    schedule = nyse.schedule(
+    schedule   = nyse.schedule(
         start_date=dt_date.strftime("%Y-%m-%d"),
         end_date=search_end.strftime("%Y-%m-%d"),
     )
     trading_days = pd.DatetimeIndex(schedule.index).normalize()
-    next_days = trading_days[trading_days > dt_date]
+    next_days    = trading_days[trading_days > dt_date]
     if len(next_days) > 0:
         result = next_days[0]
-        # Sanity check — must not be a weekend
         if result.weekday() >= 5:
             raise ValueError(
                 f"next_trading_day returned a weekend: {result.date()} "
@@ -147,24 +145,25 @@ def find_best_window(summaries: pd.DataFrame) -> dict:
     )
 
     if has_live:
-        pool     = summaries[summaries['live_excess_return'].notna()].copy()
-        best_idx = pool['live_excess_return'].idxmax()
-        best_row = pool.loc[best_idx]
+        pool         = summaries[summaries['live_excess_return'].notna()].copy()
+        best_idx     = pool['live_excess_return'].idxmax()
+        best_row     = pool.loc[best_idx]
         metric_val   = float(best_row['live_excess_return'])
         sharpe_val   = float(best_row.get('live_sharpe') or 0)
         n_days       = int(best_row.get('live_n_days') or 0)
         metric_label = f"live_excess={metric_val:.2%} ({n_days} days 2025+)"
         basis        = "live 2025+"
     else:
-        best_idx = summaries['excess_return'].idxmax()
-        best_row = summaries.loc[best_idx]
+        best_idx     = summaries['excess_return'].idxmax()
+        best_row     = summaries.loc[best_idx]
         metric_val   = float(best_row['excess_return'])
         sharpe_val   = float(best_row.get('ftrl_sharpe') or 0)
         metric_label = f"hist_excess={metric_val:.2%} (re-run training for live metrics)"
         basis        = f"historical test {int(best_row.get('test_year', '?'))}"
 
     wid         = int(best_row['window_id'])
-    train_end   = str(best_row.get('train_end', f"{int(best_row.get('test_year', 2024))-1}-12-31"))
+    train_end   = str(best_row.get('train_end',
+                      f"{int(best_row.get('test_year', 2024))-1}-12-31"))
     train_start = str(best_row.get('train_start', '2008-01-01'))
     label       = f"W{wid:02d}: {train_start[:4]}–{train_end[:4]} (best {basis})"
 
@@ -186,8 +185,8 @@ def find_best_window(summaries: pd.DataFrame) -> dict:
 
 def score_signal(record: dict, prices: pd.DataFrame, bench: pd.Series) -> dict:
     """
-    Score a single signal record. Returns updated record with actual_return, etc.
-    Returns None if not scoreable.
+    Score a single signal record. Returns updated record with actual_return etc.
+    Returns None if not scoreable yet.
     """
     signal_date = record.get('date')
     signal_etf  = record.get('signal')
@@ -234,11 +233,11 @@ def score_signal(record: dict, prices: pd.DataFrame, bench: pd.Series) -> dict:
 
         scored_record = {
             **record,
-            'actual_return':  round(etf_return, 6),
-            'agg_return':     round(agg_return, 6),
-            'excess_return':  round(etf_return - agg_return, 6),
-            'beats_agg':      beats,
-            'result_date':    next_day.strftime('%Y-%m-%d'),
+            'actual_return': round(etf_return, 6),
+            'agg_return':    round(agg_return, 6),
+            'excess_return': round(etf_return - agg_return, 6),
+            'beats_agg':     beats,
+            'result_date':   next_day.strftime('%Y-%m-%d'),
         }
 
         print(f"[Score] {signal_date} signal={signal_etf} "
@@ -266,7 +265,7 @@ def score_unscored_signals(history: list, prices: pd.DataFrame,
                 updated.append(scored)
                 changed = True
             else:
-                updated.append(rec)   # keep as is
+                updated.append(rec)
         else:
             updated.append(rec)
     return updated, changed
@@ -275,48 +274,72 @@ def score_unscored_signals(history: list, prices: pd.DataFrame,
 # ── Training on best window ────────────────────────────────────────────────────
 
 def train_on_window(best_window: dict, prices: pd.DataFrame) -> tuple:
-    """Train DDPG on the best walk-forward window's date range."""
+    """
+    Train DDPG on the best walk-forward window's date range.
+
+    Returns:
+        trainer        : trained DDPGTrainer (best weights loaded)
+        full_feat_norm : (T, C, W) normalised features for the full price
+                         history — used for inference in get_signal()
+    """
     train_prices = prices[
         (prices.index >= best_window['train_start']) &
         (prices.index <= best_window['train_end'])
     ].copy()
 
-    full_prices = prices[
-        prices.index >= best_window['train_start']
-    ].copy()
-
     print(f"\n[Train] {best_window['label']}")
     print(f"[Train] Training set: {len(train_prices)} days "
           f"({train_prices.index[0].date()} → {train_prices.index[-1].date()})")
-    print(f"[Train] Inference set: {len(full_prices)} days "
-          f"(up to {full_prices.index[-1].date()})")
 
-    train_feat = compute_features(train_prices)
-    full_feat  = compute_features(full_prices)
+    # ── Features ─────────────────────────────────────────────────────────────
+    # Compute raw features for training set and full history separately,
+    # then normalise BOTH using training-set statistics only (no lookahead).
+    train_feat_raw = compute_features(train_prices)   # (T_train, C, W)
+    full_feat_raw  = compute_features(prices)         # (T_full,  C, W)
 
-    mean = train_feat.mean(axis=(0, 2), keepdims=True)
-    std  = train_feat.std(axis=(0, 2),  keepdims=True)
-    std  = np.where(std < 1e-8, 1.0, std)
+    # normalise_features(train, test) → returns (train_norm, full_norm)
+    train_feat_norm, full_feat_norm = normalise_features(
+        train_feat_raw, full_feat_raw
+    )
 
-    train_feat_norm = ((train_feat - mean) / std).astype(np.float32)
-    full_feat_norm  = ((full_feat  - mean) / std).astype(np.float32)
+    # ── Build sliding-window matrices for training ────────────────────────────
+    train_mat = build_price_matrices(train_feat_norm, cfg.H)  # (N, C, H, W)
 
-    train_mat = build_price_matrices(train_feat_norm)
-    train_ret = PortfolioEnv.compute_daily_returns(train_prices)
+    # ── Daily returns aligned to matrices ─────────────────────────────────────
+    # compute_daily_returns returns (T-1, W); we need one return per matrix step.
+    # Matrix i uses features[i : i+H], so the corresponding return is at
+    # index i+H (the day immediately after the lookback window).
+    all_train_returns = PortfolioEnv.compute_daily_returns(train_prices)
+    # all_train_returns shape: (T_train - 1, W)
+    # train_mat shape:         (T_train - H, C, H, W)  →  N = T_train - H
+    N = len(train_mat)
+    # returns[i] corresponds to the step taken after observing matrix[i]
+    # valid index range for returns: H-1 .. H-1+N-1  (0-based into all_train_returns)
+    ret_start = cfg.H - 1
+    train_ret = all_train_returns[ret_start: ret_start + N]   # (N, W)
 
+    # Safety trim in case of off-by-one at the boundary
     n = min(len(train_mat), len(train_ret))
     train_mat = train_mat[:n]
     train_ret = train_ret[:n]
 
-    print(f"[Train] matrices={train_mat.shape} returns={train_ret.shape}")
+    print(f"[Train] matrices={train_mat.shape}  returns={train_ret.shape}")
 
-    env = PortfolioEnv(train_mat, train_ret)
+    # ── Build env and train ───────────────────────────────────────────────────
+    env             = PortfolioEnv(train_mat, train_ret)
+    checkpoint_dir  = "/tmp/ftrl_predict"
+    os.makedirs(checkpoint_dir, exist_ok=True)
 
+    trainer = DDPGTrainer(window_id=best_window['window_id'])
+
+    # Cap epochs for daily predict runs without mutating global config
+    original_max_epochs = cfg.MAX_EPOCHS
     cfg.MAX_EPOCHS = 30
+    try:
+        trainer.train(env, checkpoint_dir)
+    finally:
+        cfg.MAX_EPOCHS = original_max_epochs   # always restore
 
-    trainer = DDPGTrainer(window_id=0)
-    checkpoint_dir = "/tmp/ftrl_predict"
-    trainer.train(env, checkpoint_dir)
     trainer.load_best(checkpoint_dir)
     trainer.actor.eval()
 
@@ -325,17 +348,32 @@ def train_on_window(best_window: dict, prices: pd.DataFrame) -> tuple:
 
 # ── Inference ─────────────────────────────────────────────────────────────────
 
-def get_signal(trainer: DDPGTrainer, feat: np.ndarray,
+def get_signal(trainer: DDPGTrainer, full_feat_norm: np.ndarray,
                best_window: dict, signal_date: pd.Timestamp) -> dict:
-    """Run actor on the latest H-day window. Returns winner-takes-all signal."""
-    H = cfg.H
-    if feat.shape[0] < H:
-        raise ValueError(f"Not enough data for lookback: {feat.shape[0]} < {H}")
+    """
+    Run actor on the latest H-day window. Returns winner-takes-all signal.
 
-    latest_window = feat[-H:]
-    matrix        = latest_window.transpose(1, 0, 2)
-    matrix_t      = torch.FloatTensor(matrix).unsqueeze(0)
-    prev_weights  = torch.ones(1, cfg.W) / cfg.W
+    Args:
+        trainer        : trained DDPGTrainer
+        full_feat_norm : (T, C, W) normalised features for full price history
+        best_window    : window metadata dict
+        signal_date    : next trading day (prediction target)
+    """
+    H = cfg.H
+    T = full_feat_norm.shape[0]
+
+    if T < H:
+        raise ValueError(f"Not enough data for lookback: T={T} < H={H}")
+
+    # Take the last H time steps → shape (H, C, W)
+    latest_window = full_feat_norm[-H:]        # (H, C, W)
+
+    # Transpose to (C, H, W) — what the Actor expects
+    matrix   = latest_window.transpose(1, 0, 2)          # (C, H, W)
+    matrix_t = torch.FloatTensor(matrix).unsqueeze(0)     # (1, C, H, W)
+
+    # Equal-weight prior for previous weights
+    prev_weights = torch.ones(1, cfg.W) / cfg.W           # (1, W)
 
     with torch.no_grad():
         weights = trainer.actor(matrix_t, prev_weights).squeeze(0).numpy()
@@ -348,20 +386,20 @@ def get_signal(trainer: DDPGTrainer, feat: np.ndarray,
                    for i in range(cfg.W)}
 
     result = {
-        'date':             signal_date.strftime('%Y-%m-%d'),
-        'signal':           signal,
-        'confidence':       round(confidence, 4),
-        'raw_weights':      raw_weights,
-        'trained_on':       best_window['label'],
-        'train_start':      best_window['train_start'],
-        'train_end':        best_window['train_end'],
-        'best_window_id':   best_window['window_id'],
-        'generated_at':     datetime.utcnow().isoformat() + 'Z',
+        'date':           signal_date.strftime('%Y-%m-%d'),
+        'signal':         signal,
+        'confidence':     round(confidence, 4),
+        'raw_weights':    raw_weights,
+        'trained_on':     best_window['label'],
+        'train_start':    best_window['train_start'],
+        'train_end':      best_window['train_end'],
+        'best_window_id': best_window['window_id'],
+        'generated_at':   datetime.utcnow().isoformat() + 'Z',
     }
 
     print(f"\n[Signal] {result['date']} → {signal} "
           f"(confidence: {confidence:.1%})")
-    print(f"[Weights] " +
+    print("[Weights] " +
           " | ".join(f"{k}:{v:.1%}" for k, v in raw_weights.items()))
 
     return result
@@ -426,10 +464,10 @@ def main():
     best_window = find_best_window(summaries)
 
     # 6. Train on best window
-    trainer, feat = train_on_window(best_window, prices)
+    trainer, full_feat_norm = train_on_window(best_window, prices)
 
     # 7. Generate today's signal
-    signal = get_signal(trainer, feat, best_window, signal_date)
+    signal = get_signal(trainer, full_feat_norm, best_window, signal_date)
 
     # Append today's signal to history (avoid duplicates)
     existing_dates = {rec.get('date') for rec in signal_history}
