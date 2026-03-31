@@ -1,14 +1,9 @@
 # config.py — single source of truth for all parameters
 import os
 
-# ── Data ──────────────────────────────────────────────────────────────────────
-HF_SOURCE_REPO  = os.environ.get("HF_SOURCE_REPO", "P2SAMAPA/p2-etf-deepwave-dl")
-HF_DATASET_REPO = os.environ.get("HF_DATASET_REPO", "P2SAMAPA/p2-etf-ftrl-engine")
-HF_TOKEN        = os.environ.get("HF_TOKEN", "")
-ETF_FILE        = "data/etf_price.parquet"
-BENCH_FILE      = "data/bench_price.parquet"
+# ── Asset group selection ───────────────────────────────────────────────────
+ASSET_GROUP = os.environ.get("ASSET_GROUP", "FI")   # "FI" or "EQUITY"
 
-# ── Asset Universe ────────────────────────────────────────────────────────────
 # Fixed income ETFs (original set)
 FI_ETFS = ['TLT', 'LQD', 'HYG', 'VNQ', 'GLD', 'SLV']
 
@@ -18,10 +13,25 @@ EQUITY_ETFS = [
     "XLY", "XLP", "XLU", "XME", "GDX", "IWM"
 ]
 
-# Combined list used by the pipeline
-ASSETS = FI_ETFS + EQUITY_ETFS
-W      = len(ASSETS)                # now 18
+# Select assets based on group
+if ASSET_GROUP == "FI":
+    ASSETS = FI_ETFS
+    OUTPUT_SUFFIX = "_fi"
+elif ASSET_GROUP == "EQUITY":
+    ASSETS = EQUITY_ETFS
+    OUTPUT_SUFFIX = "_equity"
+else:
+    raise ValueError(f"Unknown ASSET_GROUP: {ASSET_GROUP}. Use 'FI' or 'EQUITY'.")
 
+# Derived values
+W      = len(ASSETS)                # now 6 or 12
+
+# ── Data ──────────────────────────────────────────────────────────────────────
+HF_SOURCE_REPO  = os.environ.get("HF_SOURCE_REPO", "P2SAMAPA/p2-etf-deepwave-dl")
+HF_DATASET_REPO = os.environ.get("HF_DATASET_REPO", "P2SAMAPA/p2-etf-ftrl-engine")
+HF_TOKEN        = os.environ.get("HF_TOKEN", "")
+ETF_FILE        = "data/etf_price.parquet"
+BENCH_FILE      = "data/bench_price.parquet"
 BENCHMARK       = 'AGG'
 START_DATE      = '2008-01-02'
 
@@ -57,19 +67,9 @@ INITIAL_CAPITAL  = 100.0
 RISK_AVERSION    = 0.0
 
 # ── Composite reward weights ──────────────────────────────────────────────────
-# Inspired by arxiv 2403.16667 additive utility framework.
-# Return stays primary; drawdown and turnover act as soft regularisers.
-#
-#   reward = W_RETURN  x  log_return
-#          - W_DRAWDOWN x |drawdown_from_peak|
-#          - W_TURNOVER x (tc x sum_abs_weight_change)
-#
-# To adjust: keep all three summing to 1.0.
-# More aggressive   -> W_RETURN=0.80, W_DRAWDOWN=0.15, W_TURNOVER=0.05
-# More conservative -> W_RETURN=0.60, W_DRAWDOWN=0.30, W_TURNOVER=0.10
-W_RETURN   = 0.80   # 80% - return is the primary objective
-W_DRAWDOWN = 0.15   # 15% - penalise drawdowns from running peak
-W_TURNOVER = 0.05   # 5% - penalise excessive rebalancing
+W_RETURN   = 0.80
+W_DRAWDOWN = 0.15
+W_TURNOVER = 0.05
 
 # ── Walk-forward windows ──────────────────────────────────────────────────────
 WINDOWS = [
@@ -92,6 +92,6 @@ WINDOWS = [
 # ── Output paths ──────────────────────────────────────────────────────────────
 RESULTS_DIR      = "results"
 MODELS_DIR       = "models"
-BACKTEST_FILE    = "results/backtest_all_windows.csv"
-SUMMARY_FILE     = "results/performance_summary.json"
-TRAINING_LOG     = "results/training_log.json"
+BACKTEST_FILE    = f"results/backtest_all_windows{OUTPUT_SUFFIX}.csv"
+SUMMARY_FILE     = f"results/performance_summary{OUTPUT_SUFFIX}.json"
+TRAINING_LOG     = f"results/training_log{OUTPUT_SUFFIX}.json"
