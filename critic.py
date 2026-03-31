@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import sys, os
+import numpy as np
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 import config as cfg
 
@@ -32,7 +33,7 @@ class Critic(nn.Module):
             nn.AdaptiveMaxPool2d((4, W)),
             nn.Flatten(),                               # → 32 * 4 * W
         )
-        conv_out_dim = 32 * 4 * W                      # = 32 * 4 * 6 = 768
+        conv_out_dim = 32 * 4 * W                      # = 32 * 4 * W
 
         # ── State projection (7 linear layers as per paper) ──────────────────
         # Gradually compress to W dimensions
@@ -59,12 +60,17 @@ class Critic(nn.Module):
     @staticmethod
     def _make_dims(in_dim: int, out_dim: int, n_layers: int):
         """Logarithmically space intermediate dimensions."""
-        import numpy as np
-        dims = np.logspace(
-            np.log10(in_dim), np.log10(out_dim),
-            n_layers + 1
-        ).astype(int).tolist()
-        dims[-1] = out_dim
+        dims = [in_dim]
+        if n_layers > 0:
+            # Create intermediate dims using logspace, excluding the first and last
+            inter = np.logspace(np.log10(in_dim), np.log10(out_dim), n_layers + 2).astype(int).tolist()
+            # Ensure first is exactly in_dim
+            inter[0] = in_dim
+            inter[-1] = out_dim
+            dims.extend(inter[1:-1])
+            dims.append(out_dim)
+        else:
+            dims = [in_dim, out_dim]
         return dims
 
     def _init_weights(self):
