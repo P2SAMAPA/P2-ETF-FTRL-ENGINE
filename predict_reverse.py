@@ -35,12 +35,36 @@ REVERSE_WINDOWS = [
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def next_trading_day(dt: pd.Timestamp) -> pd.Timestamp:
-    # unchanged
-    ...
+    """Return the next NYSE trading day after dt."""
+    nyse = mcal.get_calendar('NYSE')
+    # Look ahead up to 14 calendar days to find the next valid session
+    start = dt + pd.Timedelta(days=1)
+    end   = dt + pd.Timedelta(days=14)
+    schedule = nyse.schedule(
+        start_date=start.strftime('%Y-%m-%d'),
+        end_date=end.strftime('%Y-%m-%d'),
+    )
+    if schedule.empty:
+        # Fallback: skip weekends only (shouldn't normally happen)
+        next_day = dt + pd.Timedelta(days=1)
+        while next_day.weekday() >= 5:
+            next_day += pd.Timedelta(days=1)
+        return next_day
+    return schedule.index[0]
+
 
 def push_to_hf(local_path: str, repo_path: str):
-    # unchanged
-    ...
+    """Push a local file to the HF dataset repo."""
+    api = HfApi()
+    api.upload_file(
+        path_or_fileobj=local_path,
+        path_in_repo=repo_path,
+        repo_id=cfg.HF_DATASET_REPO,
+        repo_type="dataset",
+        token=cfg.HF_TOKEN if cfg.HF_TOKEN else None,
+    )
+    print(f"[HF] Pushed {repo_path}")
+
 
 def load_reverse_summaries() -> pd.DataFrame:
     """Load all available reverse window summaries from HF (group-aware)."""
@@ -63,9 +87,31 @@ def load_reverse_summaries() -> pd.DataFrame:
         return pd.DataFrame()
     return pd.DataFrame(frames)
 
+
 def find_best_window(summaries: pd.DataFrame) -> dict:
-    # unchanged logic
-    ...
+    """Select best reverse window by live_excess_return, fall back to excess_return."""
+    if summaries.empty:
+        print("[Best Window] No summaries found — defaulting to R1 (2008–2024)")
+        return REVERSE_WINDOWS[0]
+
+    # Prefer live_excess_return if populated
+    if 'live_excess_return' in summaries.columns:
+        live = summaries.dropna(subset=['live_excess_return'])
+        if not live.empty:
+            best = live.loc[live['live_excess_return'].idxmax()]
+            basis = 'live_excess_return'
+        else:
+            best  = summaries.loc[summaries['excess_return'].idxmax()]
+            basis = 'excess_return (fallback)'
+    else:
+        best  = summaries.loc[summaries['excess_return'].idxmax()]
+        basis = 'excess_return (fallback)'
+
+    w_id = int(best['window_id'])
+    window = next((w for w in REVERSE_WINDOWS if w['id'] == w_id), REVERSE_WINDOWS[0])
+    print(f"[Best Window] R{w_id} ({window['label']}) selected by {basis}")
+    return window
+
 
 def load_latest_reverse_signal() -> dict:
     try:
@@ -80,6 +126,7 @@ def load_latest_reverse_signal() -> dict:
             return json.load(f)
     except Exception:
         return None
+
 
 def load_reverse_signal_history() -> list:
     try:
@@ -96,23 +143,110 @@ def load_reverse_signal_history() -> list:
     except Exception:
         return []
 
+
 def score_signal(record: dict, prices: pd.DataFrame, bench: pd.Series) -> dict:
-    # unchanged
-    ...
+    """Score a previous signal record with actual return vs benchmark."""
+    signal_date = record.get('date')
+    etf         = record.get('signal')
+    if not signal_date or not etf:
+        return record
+
+    try:
+        sig_ts  = pd.Timestamp(signal_date)
+        # Find the actual return on signal_date
+        if sig_ts not in prices.index or sig_ts not in bench.index:
+            return record  # data not available yet
+
+        idx = prices.index.get_loc(sig_ts)
+        if idx == 0:
+            return record
+
+        prev_ts = prices.index[idx - 1]
+        etf_ret  = (prices.loc[sig_ts, etf]  / prices.loc[prev_ts, etf])  - 1
+        agg_ret  = (bench.loc[sig_ts]         / bench.loc[prev_ts])        - 1
+
+        record = record.copy()
+        record['actual_return']   = round(float(etf_ret), 6)
+        record['benchmark_return']= round(float(agg_ret), 6)
+        record['excess_return']   = round(float(etf_ret - agg_ret), 6)
+        record['scored']          = True
+    except Exception as e:
+        print(f"[Score] Could not score {signal_date}: {e}")
+
+    return record
+
 
 def score_unscored_signals(history: list, prices: pd.DataFrame,
                            bench: pd.Series) -> tuple[list, bool]:
-    # unchanged
-    ...
+    """Score any records that haven't been scored yet."""
+    changed = False
+    updated = []
+    for rec in history:
+        if not rec.get('scored', False):
+            new_rec = score_signal(rec, prices, bench)
+            if new_rec.get('scored'):
+                changed = True
+            updated.append(new_rec)
+        else:
+            updated.append(rec)
+    return updated, changed
+
 
 def train_on_window(window: dict, prices: pd.DataFrame) -> tuple:
-    # unchanged
-    ...
+    """Train DDPG on the given reverse window and return (trainer, latest_features)."""
+    train_prices = prices[
+        (prices.index >= window['train_start']) &
+        (prices.index <= window['train_end'])
+    ].copy()
+
+    print(f"\n[Train] Window {window['label']} | {len(train_prices)} days")
+
+    feat_raw  = compute_features(train_prices)
+    feat_norm, mu, sigma = normalise_features(feat_raw)
+    matrices  = build_price_matrices(feat_norm, cfg.H)
+
+    env     = PortfolioEnv(matrices, train_prices.values[cfg.H:])
+    trainer = DDPGTrainer(env)
+    trainer.train()
+
+    # Build inference feature from full price history (latest H days)
+    all_feat_raw  = compute_features(prices)
+    all_feat_norm = (all_feat_raw - mu) / (sigma + 1e-8)
+    all_matrices  = build_price_matrices(all_feat_norm, cfg.H)
+    latest_feat   = all_matrices[-1]  # shape (C, H, W)
+
+    return trainer, latest_feat
+
 
 def get_signal(trainer: DDPGTrainer, feat: np.ndarray,
                best_window: dict, signal_date: pd.Timestamp) -> dict:
-    # unchanged
-    ...
+    """Run inference and return signal dict."""
+    feat_tensor = torch.FloatTensor(feat).unsqueeze(0)  # (1, C, H, W)
+
+    with torch.no_grad():
+        weights = trainer.actor(feat_tensor).squeeze(0).numpy()
+
+    best_idx    = int(np.argmax(weights))
+    signal_etf  = cfg.ASSETS[best_idx]
+    confidence  = float(weights[best_idx])
+
+    signal = {
+        'date':         signal_date.strftime('%Y-%m-%d'),
+        'signal':       signal_etf,
+        'confidence':   round(confidence, 6),
+        'weights':      {cfg.ASSETS[i]: round(float(w), 6) for i, w in enumerate(weights)},
+        'trained_on':   best_window['label'],
+        'train_start':  best_window['train_start'],
+        'train_end':    best_window['train_end'],
+        'window_id':    best_window['id'],
+        'scored':       False,
+        'asset_group':  cfg.ASSET_GROUP,
+    }
+
+    print(f"[Signal] {signal_etf} ({confidence:.1%}) for {signal_date.date()} "
+          f"| trained on {best_window['label']}")
+    return signal
+
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
