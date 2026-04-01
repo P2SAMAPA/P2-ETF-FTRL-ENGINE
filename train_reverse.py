@@ -10,8 +10,10 @@
 import argparse
 import json
 import os
+import shutil
 import sys
 import numpy as np
+import pandas as pd
 import torch
 from huggingface_hub import HfApi
 
@@ -58,6 +60,17 @@ def push_to_hf(local_path: str, repo_path: str):
     print(f"[HF] Pushed {repo_path}")
 
 
+def sharpe(rets):
+    excess = rets - 0.0
+    return float((excess.mean() / (excess.std() + 1e-8)) * np.sqrt(252))
+
+
+def max_drawdown(vals):
+    peak = np.maximum.accumulate(vals)
+    dd   = (vals - peak) / (peak + 1e-8)
+    return float(dd.min())
+
+
 def main():
     args = parse_args()
     wid  = args.window
@@ -97,28 +110,32 @@ def main():
         print(f"[Error] Not enough training data: {len(train_prices)} days")
         return
 
-    if len(test_prices) < cfg.H + 5:
+    has_test = len(test_prices) >= cfg.H + 5
+    if not has_test:
         print(f"[Warning] Very little test data: {len(test_prices)} days — skipping backtest")
-        test_prices = pd.DataFrame()
 
     # ── 3. Compute features ───────────────────────────────────────────────────
-    import pandas as pd
-    train_feat = compute_features(train_prices)
+    train_feat_raw = compute_features(train_prices)
 
-    if not test_prices.empty:
-        test_feat = compute_features(test_prices)
-        train_feat, test_feat = normalise_features(train_feat, test_feat)
+    if has_test:
+        test_feat_raw = compute_features(test_prices)
+        # FIX: normalise_features(train, test) → returns both normalised arrays
+        train_feat, test_feat = normalise_features(train_feat_raw, test_feat_raw)
     else:
-        mean = train_feat.mean(axis=(0, 2), keepdims=True)
-        std  = train_feat.std(axis=(0, 2),  keepdims=True)
+        mean = train_feat_raw.mean(axis=(0, 2), keepdims=True)
+        std  = train_feat_raw.std(axis=(0, 2),  keepdims=True)
         std  = np.where(std < 1e-8, 1.0, std)
-        train_feat = ((train_feat - mean) / std).astype(np.float32)
+        train_feat = ((train_feat_raw - mean) / std).astype(np.float32)
         test_feat  = np.array([])
 
-    train_mat = build_price_matrices(train_feat)
+    # FIX: pass cfg.H explicitly
+    train_mat = build_price_matrices(train_feat, cfg.H)
     train_ret = PortfolioEnv.compute_daily_returns(train_prices)
 
-    n_train = min(len(train_mat), len(train_ret))
+    # FIX: align returns to matrices using H-1 offset (consistent with train.py)
+    n_train   = len(train_mat)
+    train_ret = train_ret[cfg.H - 1: cfg.H - 1 + n_train]
+    n_train   = min(len(train_mat), len(train_ret))
     train_mat = train_mat[:n_train]
     train_ret = train_ret[:n_train]
 
@@ -126,9 +143,20 @@ def main():
 
     # ── 4. Train ──────────────────────────────────────────────────────────────
     local_model_dir = f"/tmp/ftrl_reverse_models{cfg.OUTPUT_SUFFIX}"
+    os.makedirs(local_model_dir, exist_ok=True)
+
     train_env = PortfolioEnv(train_mat, train_ret)
-    trainer   = DDPGTrainer(window_id=100 + wid)  # offset to avoid collision
+    ddpg_wid  = 100 + wid   # offset to avoid collision with forward windows
+    trainer   = DDPGTrainer(window_id=ddpg_wid)
     train_log = trainer.train(train_env, local_model_dir)
+
+    # FIX: ddpg.py saves window_{ddpg_wid:02d}_best.pt (no suffix).
+    # Copy to the suffixed name so the push path matches.
+    raw_ckpt      = os.path.join(local_model_dir, f"window_{ddpg_wid:02d}_best.pt")
+    suffixed_ckpt = os.path.join(local_model_dir,
+                                 f"window_{ddpg_wid:02d}{cfg.OUTPUT_SUFFIX}_best.pt")
+    if os.path.exists(raw_ckpt) and raw_ckpt != suffixed_ckpt:
+        shutil.copy2(raw_ckpt, suffixed_ckpt)
 
     # ── 5. Backtest on test set ───────────────────────────────────────────────
     summary = {
@@ -137,12 +165,17 @@ def main():
         'train_start':       window['train_start'],
         'train_end':         window['train_end'],
         'test_start':        window['test_start'],
-        'test_end':          test_prices.index[-1].strftime('%Y-%m-%d') if not test_prices.empty else 'N/A',
+        'test_end':          test_prices.index[-1].strftime('%Y-%m-%d') if has_test else 'N/A',
         'ftrl_total_return': 0.0,
         'agg_total_return':  0.0,
         'excess_return':     0.0,
         'ftrl_sharpe':       0.0,
         'ftrl_max_drawdown': 0.0,
+        # FIX: predict_reverse.py looks for live_excess_return — alias here
+        # since the test period IS the live 2025+ period for reverse windows
+        'live_excess_return': None,
+        'live_sharpe':        None,
+        'live_n_days':        0,
         'best_train_epoch':  train_log['best_epoch'],
         'best_train_return': train_log['best_return'],
         'n_test_days':       len(test_prices),
@@ -150,11 +183,15 @@ def main():
 
     daily_results = []
 
-    if not test_prices.empty and len(test_feat) > 0:
-        test_mat = build_price_matrices(test_feat)
+    if has_test and len(test_feat) > 0:
+        # FIX: pass cfg.H explicitly
+        test_mat = build_price_matrices(test_feat, cfg.H)
         test_ret = PortfolioEnv.compute_daily_returns(test_prices)
 
-        n_test = min(len(test_mat), len(test_ret))
+        # FIX: align returns to matrices using H-1 offset
+        n_test   = len(test_mat)
+        test_ret = test_ret[cfg.H - 1: cfg.H - 1 + n_test]
+        n_test   = min(len(test_mat), len(test_ret))
         test_mat = test_mat[:n_test]
         test_ret = test_ret[:n_test]
 
@@ -198,40 +235,38 @@ def main():
         port_vals       = np.array(test_env.portfolio_history)
         port_daily_rets = np.diff(port_vals) / port_vals[:-1]
 
-        def sharpe(rets):
-            excess = rets - 0.0
-            return (excess.mean() / (excess.std() + 1e-8)) * np.sqrt(252)
-
-        def max_drawdown(vals):
-            peak = np.maximum.accumulate(vals)
-            dd   = (vals - peak) / (peak + 1e-8)
-            return float(dd.min())
-
         final_port_return = float(test_env.portfolio_history[-1] / cfg.INITIAL_CAPITAL - 1)
 
         if len(test_bench) > 1:
-            bench_aligned = test_bench[test_bench.index >= window['test_start']]
+            bench_aligned      = test_bench[test_bench.index >= window['test_start']]
             final_bench_return = float(bench_aligned.iloc[-1] / bench_aligned.iloc[0] - 1)
         else:
             final_bench_return = 0.0
 
+        excess    = float(final_port_return) - final_bench_return
+        sharpe_v  = sharpe(port_daily_rets)
+        max_dd    = max_drawdown(port_vals)
+
         summary.update({
-            'ftrl_total_return': float(final_port_return),
-            'agg_total_return':  final_bench_return,
-            'excess_return':     float(final_port_return) - final_bench_return,
-            'ftrl_sharpe':       float(sharpe(port_daily_rets)),
-            'ftrl_max_drawdown': max_drawdown(port_vals),
+            'ftrl_total_return':  float(final_port_return),
+            'agg_total_return':   final_bench_return,
+            'excess_return':      excess,
+            'ftrl_sharpe':        sharpe_v,
+            'ftrl_max_drawdown':  max_dd,
+            # FIX: populate live_* fields so predict_reverse.py can select best window
+            'live_excess_return': excess,
+            'live_sharpe':        sharpe_v,
+            'live_n_days':        len(daily_results),
         })
 
         print(f"\n── Window R{wid:02d} Results ──")
         print(f"  FTRL Return:  {final_port_return:.2%}")
         print(f"  AGG  Return:  {final_bench_return:.2%}")
-        print(f"  Excess:       {summary['excess_return']:.2%}")
-        print(f"  Sharpe:       {summary['ftrl_sharpe']:.3f}")
-        print(f"  Max Drawdown: {summary['ftrl_max_drawdown']:.2%}")
+        print(f"  Excess:       {excess:.2%}")
+        print(f"  Sharpe:       {sharpe_v:.3f}")
+        print(f"  Max Drawdown: {max_dd:.2%}")
 
     # ── 6. Save and push to HF ────────────────────────────────────────────────
-    import pandas as pd
     os.makedirs("/tmp/ftrl_reverse_results", exist_ok=True)
 
     summary_path = f"/tmp/ftrl_reverse_results/reverse_window_{wid:02d}{cfg.OUTPUT_SUFFIX}_summary.json"
@@ -251,11 +286,9 @@ def main():
         daily_df.to_csv(daily_path, index=False)
         push_to_hf(daily_path, f"results/reverse_window_{wid:02d}{cfg.OUTPUT_SUFFIX}_daily.csv")
 
-    best_model_path = os.path.join(
-        local_model_dir, f"window_{100+wid:02d}{cfg.OUTPUT_SUFFIX}_best.pt"
-    )
-    if os.path.exists(best_model_path):
-        push_to_hf(best_model_path,
+    # FIX: push the suffixed checkpoint copy
+    if os.path.exists(suffixed_ckpt):
+        push_to_hf(suffixed_ckpt,
                    f"models/reverse_window_{wid:02d}{cfg.OUTPUT_SUFFIX}_best.pt")
 
     print(f"\n[Done] Reverse Window R{wid:02d} ({cfg.ASSET_GROUP}) complete. All outputs pushed to HF.")
