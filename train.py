@@ -22,6 +22,15 @@ from ddpg import DDPGTrainer
 LIVE_START = '2025-01-01'   # live evaluation period — same as reverse windows
 
 
+def json_safe(v):
+    """Convert numpy scalars to plain Python types for json.dump."""
+    if isinstance(v, (np.floating, np.float32, np.float64)):
+        return float(v)
+    if isinstance(v, (np.integer,)):
+        return int(v)
+    return v
+
+
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--window', type=int, required=True,
@@ -237,6 +246,13 @@ def main():
     )
 
     # ── 6. Build summary ──────────────────────────────────────────────────────
+    # Helpers: cast numpy scalars → plain Python so json.dump never chokes
+    def hm(key, default=0.0):
+        return json_safe(hist_metrics[key]) if hist_metrics else default
+
+    def lm(key, default=None):
+        return json_safe(live_metrics[key]) if live_metrics else default
+
     summary = {
         'window_id':         wid,
         'test_year':         window['test_year'],
@@ -244,23 +260,23 @@ def main():
         'train_end':         window['train_end'],
 
         # Historical test year metrics (used by Overview tab charts)
-        'ftrl_total_return': hist_metrics['ftrl_total_return'] if hist_metrics else 0.0,
-        'agg_total_return':  hist_metrics['agg_total_return']  if hist_metrics else 0.0,
-        'excess_return':     hist_metrics['excess_return']      if hist_metrics else 0.0,
-        'ftrl_sharpe':       hist_metrics['ftrl_sharpe']        if hist_metrics else 0.0,
-        'ftrl_max_drawdown': hist_metrics['ftrl_max_drawdown']  if hist_metrics else 0.0,
+        'ftrl_total_return': hm('ftrl_total_return'),
+        'agg_total_return':  hm('agg_total_return'),
+        'excess_return':     hm('excess_return'),
+        'ftrl_sharpe':       hm('ftrl_sharpe'),
+        'ftrl_max_drawdown': hm('ftrl_max_drawdown'),
 
         # Live 2025+ metrics (used by predict.py to pick best window)
-        'live_ftrl_return':   live_metrics['ftrl_total_return'] if live_metrics else None,
-        'live_agg_return':    live_metrics['agg_total_return']  if live_metrics else None,
-        'live_excess_return': live_metrics['excess_return']      if live_metrics else None,
-        'live_sharpe':        live_metrics['ftrl_sharpe']        if live_metrics else None,
-        'live_max_drawdown':  live_metrics['ftrl_max_drawdown']  if live_metrics else None,
-        'live_n_days':        live_metrics['n_days']             if live_metrics else 0,
+        'live_ftrl_return':   lm('ftrl_total_return'),
+        'live_agg_return':    lm('agg_total_return'),
+        'live_excess_return': lm('excess_return'),
+        'live_sharpe':        lm('ftrl_sharpe'),
+        'live_max_drawdown':  lm('ftrl_max_drawdown'),
+        'live_n_days':        int(live_metrics['n_days']) if live_metrics else 0,
         'live_start':         LIVE_START,
 
-        'best_train_epoch':  train_log['best_epoch'],
-        'best_train_return': train_log['best_return'],
+        'best_train_epoch':  int(train_log['best_epoch']),
+        'best_train_return': float(train_log['best_return']),
     }
 
     print(f"\n── Window {wid:02d} Summary ──")
