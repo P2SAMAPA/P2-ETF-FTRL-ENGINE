@@ -278,6 +278,16 @@ class DDPGTrainer:
               f"at epoch {self.log['best_epoch']}")
 
         self.log['best_model_path'] = best_path
+
+        # Sanitise log: convert all numpy scalars/arrays to plain Python
+        # types so json.dump in train.py never fails on float32 values
+        self.log['actor_losses']     = [float(x) for x in self.log['actor_losses']]
+        self.log['critic_losses']    = [float(x) for x in self.log['critic_losses']]
+        self.log['episode_returns']  = [float(x) for x in self.log['episode_returns']]
+        self.log['best_return']      = float(self.log['best_return'])
+        self.log['best_epoch']       = int(self.log['best_epoch'])
+        self.log['window_id']        = int(self.log['window_id'])
+
         return self.log
 
     def load_best(self, checkpoint_dir: str):
