@@ -5,6 +5,7 @@
 import argparse
 import json
 import os
+import shutil
 import sys
 import numpy as np
 import pandas as pd
@@ -74,16 +75,22 @@ def run_backtest(trainer, prices, bench, feat_mean, feat_std,
     eval_feat = compute_features(eval_prices)
     eval_feat = ((eval_feat - feat_mean) / feat_std).astype(np.float32)
 
-    eval_mat = build_price_matrices(eval_feat)
+    # FIX: pass cfg.H explicitly — matches build_price_matrices signature
+    eval_mat = build_price_matrices(eval_feat, cfg.H)
     eval_ret = PortfolioEnv.compute_daily_returns(eval_prices)
+
+    # Align returns to matrices using the same offset as train_on_window
+    N         = len(eval_mat)
+    ret_start = cfg.H - 1
+    eval_ret  = eval_ret[ret_start: ret_start + N]
 
     n = min(len(eval_mat), len(eval_ret))
     eval_mat = eval_mat[:n]
     eval_ret = eval_ret[:n]
 
-    eval_env  = PortfolioEnv(eval_mat, eval_ret)
-    state     = eval_env.reset()
-    done      = False
+    eval_env   = PortfolioEnv(eval_mat, eval_ret)
+    state      = eval_env.reset()
+    done       = False
     daily_rows = []
 
     eval_dates = eval_prices.index[cfg.H:]
@@ -170,11 +177,18 @@ def main():
     train_feat = ((train_feat - feat_mean) / feat_std).astype(np.float32)
     test_feat  = ((test_feat  - feat_mean) / feat_std).astype(np.float32)
 
-    train_mat = build_price_matrices(train_feat)
-    test_mat  = build_price_matrices(test_feat)
+    # FIX: pass cfg.H explicitly everywhere
+    train_mat = build_price_matrices(train_feat, cfg.H)
+    test_mat  = build_price_matrices(test_feat,  cfg.H)
 
     train_ret = PortfolioEnv.compute_daily_returns(train_prices)
     test_ret  = PortfolioEnv.compute_daily_returns(test_prices)
+
+    # Align returns to matrices using H-1 offset (same logic as predict.py)
+    n_train   = len(train_mat)
+    n_test    = len(test_mat)
+    train_ret = train_ret[cfg.H - 1: cfg.H - 1 + n_train]
+    test_ret  = test_ret[cfg.H - 1:  cfg.H - 1 + n_test]
 
     n_train = min(len(train_mat), len(train_ret))
     n_test  = min(len(test_mat),  len(test_ret))
@@ -187,10 +201,20 @@ def main():
     # ── 3. Train ──────────────────────────────────────────────────────────────
     train_env       = PortfolioEnv(train_mat, train_ret)
     local_model_dir = "/tmp/ftrl_models"
-    trainer         = DDPGTrainer(window_id=wid)
-    train_log       = trainer.train(train_env, local_model_dir)
+    os.makedirs(local_model_dir, exist_ok=True)
+
+    trainer   = DDPGTrainer(window_id=wid)
+    train_log = trainer.train(train_env, local_model_dir)
     trainer.load_best(local_model_dir)
     trainer.actor.eval()
+
+    # ── FIX: copy checkpoint to the suffixed filename train.py expects ────────
+    # ddpg.py saves as: window_{wid:02d}_best.pt  (no group suffix)
+    # train.py pushes as: window_{wid:02d}{OUTPUT_SUFFIX}_best.pt
+    raw_ckpt      = os.path.join(local_model_dir, f"window_{wid:02d}_best.pt")
+    suffixed_ckpt = os.path.join(local_model_dir, f"window_{wid:02d}{cfg.OUTPUT_SUFFIX}_best.pt")
+    if raw_ckpt != suffixed_ckpt:
+        shutil.copy2(raw_ckpt, suffixed_ckpt)
 
     # ── 4. Historical backtest (original test year) ───────────────────────────
     print(f"\n[Backtest] Historical test year {window['test_year']}...")
@@ -227,13 +251,13 @@ def main():
         'ftrl_max_drawdown': hist_metrics['ftrl_max_drawdown']  if hist_metrics else 0.0,
 
         # Live 2025+ metrics (used by predict.py to pick best window)
-        'live_ftrl_return':  live_metrics['ftrl_total_return'] if live_metrics else None,
-        'live_agg_return':   live_metrics['agg_total_return']  if live_metrics else None,
-        'live_excess_return':live_metrics['excess_return']      if live_metrics else None,
-        'live_sharpe':       live_metrics['ftrl_sharpe']        if live_metrics else None,
-        'live_max_drawdown': live_metrics['ftrl_max_drawdown']  if live_metrics else None,
-        'live_n_days':       live_metrics['n_days']             if live_metrics else 0,
-        'live_start':        LIVE_START,
+        'live_ftrl_return':   live_metrics['ftrl_total_return'] if live_metrics else None,
+        'live_agg_return':    live_metrics['agg_total_return']  if live_metrics else None,
+        'live_excess_return': live_metrics['excess_return']      if live_metrics else None,
+        'live_sharpe':        live_metrics['ftrl_sharpe']        if live_metrics else None,
+        'live_max_drawdown':  live_metrics['ftrl_max_drawdown']  if live_metrics else None,
+        'live_n_days':        live_metrics['n_days']             if live_metrics else 0,
+        'live_start':         LIVE_START,
 
         'best_train_epoch':  train_log['best_epoch'],
         'best_train_return': train_log['best_return'],
@@ -257,7 +281,7 @@ def main():
     # ── 7. Save outputs ───────────────────────────────────────────────────────
     os.makedirs("/tmp/ftrl_results", exist_ok=True)
 
-    # Historical daily CSV (used by dashboard equity curves)
+    # Historical daily CSV
     if hist_daily:
         hist_df = pd.DataFrame(hist_daily)
         hist_df['test_year'] = window['test_year']
@@ -265,7 +289,7 @@ def main():
         hist_df.to_csv(daily_path, index=False)
         push_to_hf(daily_path, f"results/window_{wid:02d}{cfg.OUTPUT_SUFFIX}_daily.csv")
 
-    # Live daily CSV (separate file for potential future dashboard use)
+    # Live daily CSV
     if live_daily:
         live_df   = pd.DataFrame(live_daily)
         live_path = f"/tmp/ftrl_results/window_{wid:02d}{cfg.OUTPUT_SUFFIX}_live_daily.csv"
@@ -276,18 +300,16 @@ def main():
     summary_path = f"/tmp/ftrl_results/window_{wid:02d}{cfg.OUTPUT_SUFFIX}_summary.json"
     with open(summary_path, 'w') as f:
         json.dump(summary, f, indent=2)
+    push_to_hf(summary_path, f"results/window_{wid:02d}{cfg.OUTPUT_SUFFIX}_summary.json")
 
     # Training log
     log_path = f"/tmp/ftrl_results/window_{wid:02d}{cfg.OUTPUT_SUFFIX}_training_log.json"
     with open(log_path, 'w') as f:
         json.dump(train_log, f, indent=2)
+    push_to_hf(log_path, f"results/window_{wid:02d}{cfg.OUTPUT_SUFFIX}_training_log.json")
 
-    # Model checkpoint
-    best_model_path = os.path.join(local_model_dir, f"window_{wid:02d}{cfg.OUTPUT_SUFFIX}_best.pt")
-
-    push_to_hf(summary_path,    f"results/window_{wid:02d}{cfg.OUTPUT_SUFFIX}_summary.json")
-    push_to_hf(log_path,        f"results/window_{wid:02d}{cfg.OUTPUT_SUFFIX}_training_log.json")
-    push_to_hf(best_model_path, f"models/window_{wid:02d}{cfg.OUTPUT_SUFFIX}_best.pt")
+    # Model checkpoint — push the suffixed copy
+    push_to_hf(suffixed_ckpt, f"models/window_{wid:02d}{cfg.OUTPUT_SUFFIX}_best.pt")
 
     print(f"\n[Done] Window {wid:02d} ({cfg.ASSET_GROUP}) complete. All outputs pushed to HF.")
 
