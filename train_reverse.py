@@ -60,6 +60,15 @@ def push_to_hf(local_path: str, repo_path: str):
     print(f"[HF] Pushed {repo_path}")
 
 
+def json_safe(v):
+    """Convert numpy scalars to plain Python types for json.dump."""
+    if isinstance(v, (np.floating, np.float32, np.float64)):
+        return float(v)
+    if isinstance(v, np.integer):
+        return int(v)
+    return v
+
+
 def sharpe(rets):
     excess = rets - 0.0
     return float((excess.mean() / (excess.std() + 1e-8)) * np.sqrt(252))
@@ -248,15 +257,15 @@ def main():
         max_dd    = max_drawdown(port_vals)
 
         summary.update({
-            'ftrl_total_return':  float(final_port_return),
-            'agg_total_return':   final_bench_return,
-            'excess_return':      excess,
-            'ftrl_sharpe':        sharpe_v,
-            'ftrl_max_drawdown':  max_dd,
+            'ftrl_total_return':  json_safe(final_port_return),
+            'agg_total_return':   json_safe(final_bench_return),
+            'excess_return':      json_safe(excess),
+            'ftrl_sharpe':        json_safe(sharpe_v),
+            'ftrl_max_drawdown':  json_safe(max_dd),
             # FIX: populate live_* fields so predict_reverse.py can select best window
-            'live_excess_return': excess,
-            'live_sharpe':        sharpe_v,
-            'live_n_days':        len(daily_results),
+            'live_excess_return': json_safe(excess),
+            'live_sharpe':        json_safe(sharpe_v),
+            'live_n_days':        int(len(daily_results)),
         })
 
         print(f"\n── Window R{wid:02d} Results ──")
