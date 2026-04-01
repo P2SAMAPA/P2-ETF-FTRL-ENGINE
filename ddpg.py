@@ -97,12 +97,12 @@ class DDPGTrainer:
 
         # Training log
         self.log = {
-            'window_id':    window_id,
-            'actor_losses':  [],
-            'critic_losses': [],
+            'window_id':       window_id,
+            'actor_losses':    [],
+            'critic_losses':   [],
             'episode_returns': [],
-            'best_return':  -np.inf,
-            'best_epoch':   0,
+            'best_return':     -np.inf,
+            'best_epoch':      0,
         }
 
     def _state_to_tensors(self, state: dict):
@@ -223,12 +223,12 @@ class DDPGTrainer:
             training log dict
         """
         os.makedirs(checkpoint_dir, exist_ok=True)
-        best_path  = os.path.join(
+        best_path = os.path.join(
             checkpoint_dir, f"window_{self.window_id:02d}_best.pt"
         )
 
-        patience   = 0
-        sigma      = cfg.NOISE_SIGMA
+        patience = 0
+        sigma    = cfg.NOISE_SIGMA
 
         print(f"\n[DDPG] Window {self.window_id:02d} — "
               f"starting training for up to {cfg.MAX_EPOCHS} epochs")
@@ -250,16 +250,17 @@ class DDPGTrainer:
                   f"C-Loss: {c_loss:.5f} | "
                   f"Noise: {sigma:.4f}")
 
-            # Save best
+            # Save best — store only plain Python/torch types to stay
+            # compatible with weights_only=True in PyTorch 2.6+
             if ep_ret > self.log['best_return']:
                 self.log['best_return'] = ep_ret
                 self.log['best_epoch']  = epoch
                 torch.save({
                     'actor_state':  self.actor.state_dict(),
                     'critic_state': self.critic.state_dict(),
-                    'epoch':        epoch,
-                    'return':       ep_ret,
-                    'window_id':    self.window_id,
+                    'epoch':        int(epoch),
+                    'return':       float(ep_ret),
+                    'window_id':    int(self.window_id),
                 }, best_path)
                 patience = 0
                 print(f"  ✓ New best saved (epoch {epoch})")
@@ -280,11 +281,28 @@ class DDPGTrainer:
         return self.log
 
     def load_best(self, checkpoint_dir: str):
-        """Load best saved weights for inference."""
+        """
+        Load best saved weights for inference.
+        Compatible with PyTorch 2.6+ weights_only=True default.
+        """
         path = os.path.join(
             checkpoint_dir, f"window_{self.window_id:02d}_best.pt"
         )
-        ckpt = torch.load(path, map_location='cpu')
+
+        # FIX: PyTorch 2.6 changed default weights_only=True, which blocks
+        # numpy scalars. We save only plain Python/torch types so
+        # weights_only=True is safe here. Add safe_globals as a belt-and-
+        # suspenders fallback for any residual numpy scalars in older checkpoints.
+        try:
+            ckpt = torch.load(path, map_location='cpu', weights_only=True)
+        except Exception:
+            # Fallback for checkpoints saved before this fix (numpy scalars present)
+            import torch.serialization as _ts
+            import numpy as _np
+            with _ts.safe_globals([_np._core.multiarray.scalar,
+                                   _np.dtype]):
+                ckpt = torch.load(path, map_location='cpu', weights_only=True)
+
         self.actor.load_state_dict(ckpt['actor_state'])
         self.actor.eval()
         print(f"[DDPG] Loaded best model from epoch {ckpt['epoch']} "
