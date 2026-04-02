@@ -26,7 +26,7 @@ jobs:
         run: echo "HF_TOKEN=${HF_TOKEN}" >> $GITHUB_ENV
 
       - name: Set asset group
-        run: echo "ASSET_GROUP=EQUITY" >> $GITHUB_ENV   # change to FI if needed
+        run: echo "ASSET_GROUP=EQUITY" >> $GITHUB_ENV
 
       - name: Train forward windows (1-14)
         run: |
