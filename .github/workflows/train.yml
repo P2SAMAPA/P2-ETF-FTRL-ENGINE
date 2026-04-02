@@ -1,96 +1,122 @@
 name: Train FTRL Window
 
 on:
-  schedule:
-    # First Monday of each month at 20:00 UTC — re-validates all windows
-    - cron: '0 20 1-7 * 1'
-  workflow_dispatch:
-    inputs:
-      window_id:
-        description: 'Walk-forward window ID (1-14), or "all" to run all in parallel'
-        required: true
-        default: 'all'
-        type: choice
-        options:
-          - 'all'
-          - '1'
-          - '2'
-          - '3'
-          - '4'
-          - '5'
-          - '6'
-          - '7'
-          - '8'
-          - '9'
-          - '10'
-          - '11'
-          - '12'
-          - '13'
-          - '14'
+schedule:
+# First Monday of each month at 20:00 UTC
+- cron: '0 20 1-7 * 1'
+workflow_dispatch:
+inputs:
+window_id:
+description: 'Walk-forward window ID (1-14), or "all" to run all in parallel'
+required: true
+default: 'all'
+type: choice
+options:
+- 'all'
+- '1'
+- '2'
+- '3'
+- '4'
+- '5'
+- '6'
+- '7'
+- '8'
+- '9'
+- '10'
+- '11'
+- '12'
+- '13'
+- '14'
 
 jobs:
-  setup:
-    runs-on: ubuntu-latest
-    outputs:
-      matrix: ${{ steps.set-matrix.outputs.matrix }}
-    steps:
-      - name: Set matrix
-        id: set-matrix
-        run: |
-          # For scheduled runs, always run all 14
-          INPUT="${{ github.event.inputs.window_id }}"
-          if [ -z "$INPUT" ] || [ "$INPUT" = "all" ]; then
-            echo 'matrix={"window":["1","2","3","4","5","6","7","8","9","10","11","12","13","14"]}' >> $GITHUB_OUTPUT
-          else
-            echo "matrix={\"window\":[\"$INPUT\"]}" >> $GITHUB_OUTPUT
-          fi
+setup:
+runs-on: ubuntu-latest
+outputs:
+matrix: ${{ steps.set-matrix.outputs.matrix }}
+steps:
+- name: Set matrix
+id: set-matrix
+run: |
+INPUT="${{ github.event.inputs.window_id }}"
+if [ -z "$INPUT" ] || [ "$INPUT" = "all" ]; then
+echo 'matrix={"window":["1","2","3","4","5","6","7","8","9","10","11","12","13","14"]}' >> $GITHUB_OUTPUT
+else
+echo "matrix={"window":["$INPUT"]}" >> $GITHUB_OUTPUT
+fi
 
-  train:
-    needs: setup
-    runs-on: ubuntu-latest
-    timeout-minutes: 350
-    strategy:
-      matrix: ${{ fromJson(needs.setup.outputs.matrix) }}
-      fail-fast: false
+train:
+needs: setup
+runs-on: ubuntu-latest
+timeout-minutes: 350
 
-    steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+```
+strategy:
+  matrix: ${{ fromJson(needs.setup.outputs.matrix) }}
+  fail-fast: false
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: 'pip'
+env:
+  HF_TOKEN:        ${{ secrets.HF_TOKEN }}
+  HF_DATASET_REPO: ${{ secrets.HF_DATASET_REPO }}
+  HF_SOURCE_REPO:  ${{ secrets.HF_SOURCE_REPO }}
 
-      - name: Install dependencies
-        run: pip install -r requirements.txt
+  # 🔧 CPU optimization
+  OMP_NUM_THREADS: 2
+  MKL_NUM_THREADS: 2
+  NUMEXPR_NUM_THREADS: 2
 
-      - name: Install torch
-        run: pip install torch==2.2.2 "numpy<2" --index-url https://download.pytorch.org/whl/cpu
+steps:
+  - name: Checkout repo
+    uses: actions/checkout@v4
 
-      - name: Set PYTHONPATH
-        run: echo "PYTHONPATH=$(pwd)" >> $GITHUB_ENV
+  - name: Set up Python 3.11 (with pip cache)
+    uses: actions/setup-python@v5
+    with:
+      python-version: '3.11'
+      cache: 'pip'
 
-      - name: Show system info
-        run: |
-          python -c "import torch; print('PyTorch:', torch.__version__)"
-          python -c "import torch; print('CPU threads:', torch.get_num_threads())"
-          nproc
-          free -h
+  - name: Cache data / intermediate files
+    uses: actions/cache@v4
+    with:
+      path: |
+        ~/.cache
+        /tmp/ftrl_cache
+      key: ${{ runner.os }}-ftrl-${{ hashFiles('**/*.py') }}
+      restore-keys: |
+        ${{ runner.os }}-ftrl-
 
-      - name: Train window ${{ matrix.window }}
-        env:
-          HF_TOKEN:        ${{ secrets.HF_TOKEN }}
-          HF_DATASET_REPO: ${{ secrets.HF_DATASET_REPO }}
-          HF_SOURCE_REPO:  ${{ secrets.HF_SOURCE_REPO }}
-        run: |
-          python train.py --window ${{ matrix.window }}
+  - name: Install dependencies
+    run: |
+      python -m pip install --upgrade pip
+      pip install -r requirements.txt
 
-      - name: Upload artifacts (local backup)
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: window-${{ matrix.window }}-results
-          path: /tmp/ftrl_results/
-          retention-days: 30
+  - name: Install torch (CPU optimized)
+    run: pip install torch==2.2.2 "numpy<2" --index-url https://download.pytorch.org/whl/cpu
+
+  - name: Set PYTHONPATH
+    run: echo "PYTHONPATH=$(pwd)" >> $GITHUB_ENV
+
+  - name: Show system info
+    run: |
+      python -c "import torch; print('PyTorch:', torch.__version__)"
+      python -c "import torch; print('CPU threads:', torch.get_num_threads())"
+      nproc
+      free -h
+
+  - name: Train window ${{ matrix.window }}
+    run: |
+      mkdir -p /tmp/ftrl_cache
+      python train.py --window ${{ matrix.window }}
+
+  - name: Upload artifacts (local backup)
+    uses: actions/upload-artifact@v4
+    if: always()
+    with:
+      name: window-${{ matrix.window }}-results
+      path: /tmp/ftrl_results/
+      retention-days: 30
+
+  - name: Cleanup (optional)
+    if: always()
+    run: |
+      rm -rf /tmp/ftrl_cache || true
+```
