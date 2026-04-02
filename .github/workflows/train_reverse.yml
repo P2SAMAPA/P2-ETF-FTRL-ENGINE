@@ -2,13 +2,34 @@ name: Train FTRL Reverse Windows
 
 on:
   workflow_dispatch:
+    inputs:
+      window:
+        description: 'Window ID (1-14) or "all"'
+        required: true
+        default: 'all'
 
 jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Set matrix
+        id: set-matrix
+        run: |
+          INPUT="${{ github.event.inputs.window }}"
+          if [ -z "$INPUT" ] || [ "$INPUT" = "all" ]; then
+            echo 'matrix={"window":[1,2,3,4,5,6,7,8,9,10,11,12,13,14]}' >> $GITHUB_OUTPUT
+          else
+            echo "matrix={\"window\":[$INPUT]}" >> $GITHUB_OUTPUT
+          fi
+
   train:
+    needs: setup
     runs-on: ubuntu-latest
     strategy:
-      matrix:
-        window: [1,2,3]
+      fail-fast: false
+      matrix: ${{ fromJson(needs.setup.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
