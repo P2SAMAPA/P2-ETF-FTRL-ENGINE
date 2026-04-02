@@ -9,13 +9,28 @@ on:
         default: 'all'
 
 jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Set matrix
+        id: set-matrix
+        run: |
+          INPUT="${{ github.event.inputs.window }}"
+          if [ -z "$INPUT" ] || [ "$INPUT" = "all" ]; then
+            echo 'matrix={"window":[1,2,3,4,5,6,7,8,9,10,11,12,13,14]}' >> $GITHUB_OUTPUT
+          else
+            echo "matrix={\"window\":[$INPUT]}" >> $GITHUB_OUTPUT
+          fi
+
   train:
+    needs: setup
     runs-on: ubuntu-latest
     timeout-minutes: 340
     strategy:
       fail-fast: false
-      matrix:
-        window: ${{ fromJson(github.event.inputs.window == 'all' && '[1,2,3,4,5,6,7,8,9,10,11,12,13,14]' || format('[{0}]', github.event.inputs.window)) }}
+      matrix: ${{ fromJson(needs.setup.outputs.matrix) }}
     env:
       HF_TOKEN:        ${{ secrets.HF_TOKEN }}
       HF_SOURCE_REPO:  ${{ secrets.HF_SOURCE_REPO }}
