@@ -1162,7 +1162,7 @@ with st.sidebar:
         if st.button("▶ Expanding", key="fi_exp", use_container_width=True, type="primary"):
             ok, msg = trigger_workflow("predict.yml")
             st.success("Triggered ✅") if ok else st.error(msg)
-        if st.button("▶ Reverse", key="fi_rev", use_container_width=True):
+        if st.button("▶ Reverse", key="fi_rev", use_container_width=True, type="primary"):
             ok, msg = trigger_workflow("predict_reverse.yml")
             st.success("Triggered ✅") if ok else st.error(msg)
 
@@ -1171,7 +1171,7 @@ with st.sidebar:
         if st.button("▶ Expanding", key="eq_exp", use_container_width=True, type="primary"):
             ok, msg = trigger_workflow("predict_equity.yml")
             st.success("Triggered ✅") if ok else st.error(msg)
-        if st.button("▶ Reverse", key="eq_rev", use_container_width=True):
+        if st.button("▶ Reverse", key="eq_rev", use_container_width=True, type="primary"):
             ok, msg = trigger_workflow("predict_reverse_equity.yml")
             st.success("Triggered ✅") if ok else st.error(msg)
 
