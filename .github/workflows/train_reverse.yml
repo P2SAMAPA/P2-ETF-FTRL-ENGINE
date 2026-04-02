@@ -2,37 +2,15 @@ name: Train FTRL Reverse Windows
 
 on:
 workflow_dispatch:
-inputs:
-window_id:
-description: 'Reverse window ID (1-14) or "all"'
-required: true
-default: 'all'
 
 jobs:
-setup:
+train:
 runs-on: ubuntu-latest
-outputs:
-matrix: ${{ steps.set-matrix.outputs.matrix }}
-steps:
-- name: Set matrix
-id: set-matrix
-run: |
-INPUT="${{ github.event.inputs.window_id }}"
-if [ -z "$INPUT" ] || [ "$INPUT" = "all" ]; then
-echo 'matrix={"window":["1","2","3","4","5","6","7","8","9","10","11","12","13","14"]}' >> $GITHUB_OUTPUT
-else
-echo "matrix={"window":["$INPUT"]}" >> $GITHUB_OUTPUT
-fi
-
-train_reverse:
-needs: setup
-runs-on: ubuntu-latest
-timeout-minutes: 350
 
 ```
 strategy:
-  matrix: ${{ fromJson(needs.setup.outputs.matrix) }}
-  fail-fast: false
+  matrix:
+    window: [1,2,3]
 
 steps:
   - uses: actions/checkout@v4
@@ -40,15 +18,8 @@ steps:
   - uses: actions/setup-python@v5
     with:
       python-version: '3.11'
-      cache: 'pip'
 
-  - name: Install dependencies
-    run: pip install -r requirements.txt
+  - run: pip install -r requirements.txt
 
-  - name: Train
-    env:
-      HF_TOKEN:        ${{ secrets.HF_TOKEN }}
-      HF_DATASET_REPO: ${{ secrets.HF_DATASET_REPO }}
-      HF_SOURCE_REPO:  ${{ secrets.HF_SOURCE_REPO }}
-    run: python train_reverse.py --window ${{ matrix.window }}
+  - run: python train_reverse.py --window ${{ matrix.window }}
 ```
