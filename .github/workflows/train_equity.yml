@@ -1,32 +1,67 @@
 name: Train FTRL Equity Windows
 
 on:
-  workflow_dispatch:
-    inputs:
-      window:
-        description: 'Window ID (1-14) or "all"'
-        required: true
-        default: 'all'
+workflow_dispatch:
+inputs:
+window:
+description: 'Window ID (1-14) or "all"'
+required: true
+default: 'all'
 
 jobs:
-  train:
-    runs-on: ubuntu-latest
-    timeout-minutes: 360
-    strategy:
-      fail-fast: false
-      matrix:
-        window: ${{ fromJson(github.event.inputs.window == 'all' && '[1,2,3,4,5,6,7,8,9,10,11,12,13,14]' || format('[{0}]', github.event.inputs.window)) }}
+train:
+runs-on: ubuntu-latest
+timeout-minutes: 360
 
-    env:
-      HF_TOKEN:        ${{ secrets.HF_TOKEN }}
-      HF_SOURCE_REPO:  ${{ secrets.HF_SOURCE_REPO }}
-      HF_DATASET_REPO: ${{ secrets.HF_DATASET_REPO }}
-      ASSET_GROUP:     "EQUITY"
+```
+strategy:
+  fail-fast: false
+  matrix:
+    window: ${{ fromJson(github.event.inputs.window == 'all' && '[1,2,3,4,5,6,7,8,9,10,11,12,13,14]' || format('[{0}]', github.event.inputs.window)) }}
 
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - run: pip install -r requirements.txt
-      - run: python train.py --window ${{ matrix.window }}
+env:
+  HF_TOKEN:        ${{ secrets.HF_TOKEN }}
+  HF_SOURCE_REPO:  ${{ secrets.HF_SOURCE_REPO }}
+  HF_DATASET_REPO: ${{ secrets.HF_DATASET_REPO }}
+  ASSET_GROUP:     "EQUITY"
+
+  # 🔧 CPU optimization (prevents slowdown)
+  OMP_NUM_THREADS: 2
+  MKL_NUM_THREADS: 2
+  NUMEXPR_NUM_THREADS: 2
+
+steps:
+  - name: Checkout repo
+    uses: actions/checkout@v4
+
+  - name: Setup Python (with pip cache)
+    uses: actions/setup-python@v5
+    with:
+      python-version: '3.11'
+      cache: 'pip'
+
+  - name: Cache data / intermediate files
+    uses: actions/cache@v4
+    with:
+      path: |
+        ~/.cache
+        /tmp/ftrl_cache
+      key: ${{ runner.os }}-ftrl-${{ hashFiles('**/*.py') }}
+      restore-keys: |
+        ${{ runner.os }}-ftrl-
+
+  - name: Install dependencies
+    run: |
+      python -m pip install --upgrade pip
+      pip install -r requirements.txt
+
+  - name: Run training
+    run: |
+      mkdir -p /tmp/ftrl_cache
+      python train.py --window ${{ matrix.window }}
+
+  - name: Cleanup (optional, keeps runner clean)
+    if: always()
+    run: |
+      rm -rf /tmp/ftrl_cache || true
+```
