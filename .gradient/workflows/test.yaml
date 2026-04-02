@@ -1,0 +1,10 @@
+name: test-workflow
+
+machine:
+  type: A4000
+
+container:
+  image: paperspace/pytorch:latest
+
+commands:
+  - echo "hello from paperspace"
