@@ -193,7 +193,7 @@ def score_unscored_signals(history: list, prices: pd.DataFrame,
 
 
 def train_on_window(window: dict, prices: pd.DataFrame) -> tuple:
-    """Train DDPG on the given reverse window and return (trainer, latest_features)."""
+    """Train DDPG on the given reverse window and return (trainer, full_feat_norm)."""
     train_prices = prices[
         (prices.index >= window['train_start']) &
         (prices.index <= window['train_end'])
@@ -201,46 +201,80 @@ def train_on_window(window: dict, prices: pd.DataFrame) -> tuple:
 
     print(f"\n[Train] Window {window['label']} | {len(train_prices)} days")
 
-    feat_raw  = compute_features(train_prices)
-    feat_norm, mu, sigma = normalise_features(feat_raw)
-    matrices  = build_price_matrices(feat_norm, cfg.H)
+    # Compute features for training set and full history
+    train_feat_raw = compute_features(train_prices)
+    full_feat_raw  = compute_features(prices)
 
-    env     = PortfolioEnv(matrices, train_prices.values[cfg.H:])
-    trainer = DDPGTrainer(env)
-    trainer.train()
+    # normalise using training stats only — no lookahead bias
+    train_feat_norm, full_feat_norm = normalise_features(train_feat_raw, full_feat_raw)
 
-    # Build inference feature from full price history (latest H days)
-    all_feat_raw  = compute_features(prices)
-    all_feat_norm = (all_feat_raw - mu) / (sigma + 1e-8)
-    all_matrices  = build_price_matrices(all_feat_norm, cfg.H)
-    latest_feat   = all_matrices[-1]  # shape (C, H, W)
+    # Build sliding-window matrices
+    train_mat = build_price_matrices(train_feat_norm, cfg.H)
 
-    return trainer, latest_feat
+    # Align returns with H-1 offset (consistent with train.py)
+    train_ret = PortfolioEnv.compute_daily_returns(train_prices)
+    N         = len(train_mat)
+    train_ret = train_ret[cfg.H - 1: cfg.H - 1 + N]
+    n         = min(len(train_mat), len(train_ret))
+    train_mat = train_mat[:n]
+    train_ret = train_ret[:n]
+
+    print(f"[Train] matrices={train_mat.shape} returns={train_ret.shape}")
+
+    env             = PortfolioEnv(train_mat, train_ret)
+    checkpoint_dir  = f"/tmp/ftrl_reverse_predict{cfg.OUTPUT_SUFFIX}"
+    os.makedirs(checkpoint_dir, exist_ok=True)
+
+    trainer = DDPGTrainer(window_id=window['id'])
+
+    # Cap epochs for daily predict runs without mutating global config
+    original_max_epochs = cfg.MAX_EPOCHS
+    cfg.MAX_EPOCHS = 30
+    try:
+        trainer.train(env, checkpoint_dir)
+    finally:
+        cfg.MAX_EPOCHS = original_max_epochs
+
+    trainer.load_best(checkpoint_dir)
+    trainer.actor.eval()
+
+    return trainer, full_feat_norm
 
 
-def get_signal(trainer: DDPGTrainer, feat: np.ndarray,
+def get_signal(trainer: DDPGTrainer, full_feat_norm: np.ndarray,
                best_window: dict, signal_date: pd.Timestamp) -> dict:
-    """Run inference and return signal dict."""
-    feat_tensor = torch.FloatTensor(feat).unsqueeze(0)  # (1, C, H, W)
+    """Run actor on the latest H-day window. Returns winner-takes-all signal."""
+    H = cfg.H
+    T = full_feat_norm.shape[0]
+
+    if T < H:
+        raise ValueError(f"Not enough data for lookback: T={T} < H={H}")
+
+    # Last H time steps → (H, C, W), transpose to (C, H, W)
+    latest_window = full_feat_norm[-H:]
+    matrix        = latest_window.transpose(1, 0, 2)           # (C, H, W)
+    matrix_t      = torch.FloatTensor(matrix).unsqueeze(0)      # (1, C, H, W)
+    prev_weights  = torch.ones(1, cfg.W) / cfg.W               # (1, W)
 
     with torch.no_grad():
-        weights = trainer.actor(feat_tensor).squeeze(0).numpy()
+        weights = trainer.actor(matrix_t, prev_weights).squeeze(0).numpy()
 
-    best_idx    = int(np.argmax(weights))
-    signal_etf  = cfg.ASSETS[best_idx]
-    confidence  = float(weights[best_idx])
+    best_idx   = int(np.argmax(weights))
+    signal_etf = cfg.ASSETS[best_idx]
+    confidence = float(weights[best_idx])
 
     signal = {
-        'date':         signal_date.strftime('%Y-%m-%d'),
-        'signal':       signal_etf,
-        'confidence':   round(confidence, 6),
-        'weights':      {cfg.ASSETS[i]: round(float(w), 6) for i, w in enumerate(weights)},
-        'trained_on':   best_window['label'],
-        'train_start':  best_window['train_start'],
-        'train_end':    best_window['train_end'],
-        'window_id':    best_window['id'],
-        'scored':       False,
-        'asset_group':  cfg.ASSET_GROUP,
+        'date':        signal_date.strftime('%Y-%m-%d'),
+        'signal':      signal_etf,
+        'confidence':  round(confidence, 6),
+        'weights':     {cfg.ASSETS[i]: round(float(w), 6) for i, w in enumerate(weights)},
+        'trained_on':  best_window['label'],
+        'train_start': best_window['train_start'],
+        'train_end':   best_window['train_end'],
+        'window_id':   best_window['id'],
+        'scored':      False,
+        'asset_group': cfg.ASSET_GROUP,
+        'generated_at': __import__('datetime').datetime.utcnow().isoformat() + 'Z',
     }
 
     print(f"[Signal] {signal_etf} ({confidence:.1%}) for {signal_date.date()} "
