@@ -1,0 +1,41 @@
+version: 1
+name: Train FTRL ETF - All Windows (Forward + Reverse)
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  train:
+    machine: P4000
+    container: pytorch/pytorch:2.0.1-cuda11.7-cudnn8-runtime
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install huggingface_hub datasets
+
+      - name: Set Hugging Face token
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: echo "HF_TOKEN=${HF_TOKEN}" >> $GITHUB_ENV
+
+      - name: Set asset group
+        run: echo "ASSET_GROUP=EQUITY" >> $GITHUB_ENV   # change to FI if needed
+
+      - name: Train forward windows (1-14)
+        run: |
+          for w in {1..14}; do
+            python train.py --window $w
+          done
+
+      - name: Train reverse windows (1-14)
+        run: |
+          for w in {1..14}; do
+            python train_reverse.py --window $w
+          done
