@@ -1,25 +1,18 @@
 name: Train FTRL Reverse Windows
 
 on:
-workflow_dispatch:
+  workflow_dispatch:
 
 jobs:
-train:
-runs-on: ubuntu-latest
-
-```
-strategy:
-  matrix:
-    window: [1,2,3]
-
-steps:
-  - uses: actions/checkout@v4
-
-  - uses: actions/setup-python@v5
-    with:
-      python-version: '3.11'
-
-  - run: pip install -r requirements.txt
-
-  - run: python train_reverse.py --window ${{ matrix.window }}
-```
+  train:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        window: [1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - run: python train_reverse.py --window ${{ matrix.window }}
