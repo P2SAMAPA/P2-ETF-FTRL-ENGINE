@@ -228,6 +228,53 @@ def load_reverse_signal_history(suffix: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+# ── PATCH 1: Training status loader + renderer ────────────────────────────────
+
+@st.cache_data(ttl=300)
+def load_training_status(suffix: str, is_reverse: bool = False) -> dict:
+    """Load the latest training run status from HF."""
+    prefix = "reverse_" if is_reverse else ""
+    fname  = f"results/{prefix}training_status{suffix}.json"
+    try:
+        path = hf_hub_download(repo_id=HF_REPO, filename=fname,
+                               repo_type="dataset", force_download=True)
+        with open(path) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def render_training_status(suffix: str):
+    """Show warning/success banners based on last training run outcome."""
+    exp_status = load_training_status(suffix, is_reverse=False)
+    rev_status = load_training_status(suffix, is_reverse=True)
+
+    for status, label in [(exp_status, "Expanding"), (rev_status, "Reverse")]:
+        if not status:
+            continue
+        failed    = status.get("failed", [])
+        succeeded = status.get("succeeded", [])
+        run_date  = status.get("date", "unknown date")
+
+        if failed:
+            win_list = ", ".join(f"W{w:02d}" for w in sorted(failed))
+            ok_list  = ", ".join(f"W{w:02d}" for w in sorted(succeeded))
+            st.warning(
+                f"⚠️ **{label} training ({run_date}):** "
+                f"{len(failed)} window(s) failed — **{win_list}**. "
+                f"Results shown are from previous successful runs. "
+                f"Re-trigger the workflow with `skip_completed=true` to retrain "
+                f"only these windows.  ✅ Succeeded: {ok_list if ok_list else 'none'}",
+                icon="⚠️",
+            )
+        elif succeeded:
+            st.success(
+                f"✅ **{label} training ({run_date}):** "
+                f"All {len(succeeded)} window(s) completed successfully.",
+                icon="✅",
+            )
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def build_equity_curve(daily_df):
@@ -333,6 +380,9 @@ def consensus_label(n_scored: int) -> str:
 def render_group(group_name: str, suffix: str, assets: list, colors: dict,
                  key_prefix: str):
     """Render the complete dashboard for one asset group (FI or EQUITY)."""
+
+    # ── PATCH 2: Show training status banners at top of each group ────────────
+    render_training_status(suffix)
 
     # Load all data for this group
     summary_df         = load_summary(suffix)
@@ -460,7 +510,7 @@ def render_group(group_name: str, suffix: str, assets: list, colors: dict,
                                 color_override='#FF9800'),
                     unsafe_allow_html=True)
 
-        # ── Consensus progress tracker ────────────────────────────────────────────
+        # ── Consensus progress tracker ─────────────────────────────────────────
         all_days = []
         if not history_exp.empty and 'date' in history_exp.columns:
             exp_sorted = history_exp.sort_values('date', ascending=True).reset_index(drop=True)
