@@ -7,30 +7,59 @@ on:
         description: 'Window ID (1-14) or "all"'
         required: true
         default: 'all'
+      skip_completed:
+        description: 'Skip windows already trained today?'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
 
 jobs:
   setup:
     runs-on: ubuntu-latest
     outputs:
-      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      matrix:      ${{ steps.set-matrix.outputs.matrix }}
+      has_pending: ${{ steps.set-matrix.outputs.has_pending }}
+      completed:   ${{ steps.set-matrix.outputs.completed }}
     steps:
-      - name: Set matrix
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install minimal deps for setup check
+        run: pip install huggingface_hub
+
+      - name: Determine windows to train
         id: set-matrix
+        env:
+          HF_TOKEN:        ${{ secrets.HF_TOKEN }}
+          HF_DATASET_REPO: ${{ secrets.HF_DATASET_REPO }}
         run: |
           INPUT="${{ github.event.inputs.window }}"
-          if [ -z "$INPUT" ] || [ "$INPUT" = "all" ]; then
-            echo 'matrix={"window":[1,2,3,4,5,6,7,8,9,10,11,12,13,14]}' >> $GITHUB_OUTPUT
+          SKIP="${{ github.event.inputs.skip_completed }}"
+
+          if [ "$INPUT" = "all" ] || [ -z "$INPUT" ]; then
+            python check_completed.py --suffix _equity --skip_completed "$SKIP"
           else
-            echo "matrix={\"window\":[$INPUT]}" >> $GITHUB_OUTPUT
+            echo "matrix=[$INPUT]" >> $GITHUB_OUTPUT
+            echo "has_pending=true" >> $GITHUB_OUTPUT
+            echo "completed=[]" >> $GITHUB_OUTPUT
           fi
 
   train:
     needs: setup
+    if: needs.setup.outputs.has_pending == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 360
     strategy:
       fail-fast: false
-      matrix: ${{ fromJson(needs.setup.outputs.matrix) }}
+      matrix:
+        window: ${{ fromJson(needs.setup.outputs.matrix) }}
     env:
       HF_TOKEN:        ${{ secrets.HF_TOKEN }}
       HF_SOURCE_REPO:  ${{ secrets.HF_SOURCE_REPO }}
@@ -40,36 +69,76 @@ jobs:
       MKL_NUM_THREADS: 2
       NUMEXPR_NUM_THREADS: 2
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Python (with pip cache)
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
 
-      - name: Cache data / intermediate files
-        uses: actions/cache@v4
+      - uses: actions/cache@v4
         with:
           path: |
             ~/.cache
             /tmp/ftrl_cache
-          key: ${{ runner.os }}-ftrl-${{ hashFiles('**/*.py') }}
+          key: ${{ runner.os }}-ftrl-equity-${{ hashFiles('**/*.py') }}
           restore-keys: |
-            ${{ runner.os }}-ftrl-
+            ${{ runner.os }}-ftrl-equity-
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run training
+      - name: Train window ${{ matrix.window }}
         run: |
-          mkdir -p /tmp/ftrl_cache
+          mkdir -p /tmp/ftrl_results /tmp/ftrl_cache
           python train.py --window ${{ matrix.window }}
 
-      - name: Cleanup (optional, keeps runner clean)
+      - name: Upload outcome artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: equity-outcome-window-${{ matrix.window }}
+          path: /tmp/ftrl_results/window_${{ matrix.window < 10 && format('0{0}', matrix.window) || matrix.window }}_equity_outcome.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf /tmp/ftrl_cache || true
+
+  report:
+    needs: [setup, train]
+    if: always() && needs.setup.outputs.has_pending == 'true'
+    runs-on: ubuntu-latest
+    env:
+      HF_TOKEN:        ${{ secrets.HF_TOKEN }}
+      HF_DATASET_REPO: ${{ secrets.HF_DATASET_REPO }}
+      ASSET_GROUP:     "EQUITY"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: pip install huggingface_hub
+
+      - name: Download all outcome artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: equity-outcome-window-*
+          path: /tmp/ftrl_results
+          merge-multiple: true
+
+      - name: Generate and push training status report
+        run: python report_status.py --suffix _equity
+
+      - name: Print summary
         if: always()
         run: |
-          rm -rf /tmp/ftrl_cache || true
+          echo "=== Equity Training Run Complete ==="
+          echo "Already completed (skipped): ${{ needs.setup.outputs.completed }}"
+          cat /tmp/ftrl_results/training_status_equity.json 2>/dev/null || echo "No status file found"
