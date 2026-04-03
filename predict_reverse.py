@@ -35,8 +35,7 @@ REVERSE_WINDOWS = [
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def next_trading_day(dt: pd.Timestamp) -> pd.Timestamp:
-    """Return the next NYSE trading day after dt."""
-    nyse = mcal.get_calendar('NYSE')
+    nyse  = mcal.get_calendar('NYSE')
     start = dt + pd.Timedelta(days=1)
     end   = dt + pd.Timedelta(days=14)
     schedule = nyse.schedule(
@@ -52,7 +51,6 @@ def next_trading_day(dt: pd.Timestamp) -> pd.Timestamp:
 
 
 def push_to_hf(local_path: str, repo_path: str):
-    """Push a local file to the HF dataset repo."""
     api = HfApi()
     api.upload_file(
         path_or_fileobj=local_path,
@@ -65,7 +63,6 @@ def push_to_hf(local_path: str, repo_path: str):
 
 
 def load_reverse_summaries() -> pd.DataFrame:
-    """Load all available reverse window summaries from HF (group-aware)."""
     frames = []
     for w_id in range(1, 15):
         try:
@@ -87,7 +84,6 @@ def load_reverse_summaries() -> pd.DataFrame:
 
 
 def find_best_window(summaries: pd.DataFrame) -> dict:
-    """Select best reverse window by live_excess_return, fall back to excess_return."""
     if summaries.empty:
         print("[Best Window] No summaries found — defaulting to R1 (2008–2024)")
         return REVERSE_WINDOWS[0]
@@ -142,11 +138,8 @@ def load_reverse_signal_history() -> list:
 
 
 def score_signal(record: dict, prices: pd.DataFrame, bench: pd.Series) -> dict:
-    """Score a previous signal record with actual return vs benchmark.
-    
-    Saves beats_agg, agg_return, actual_return, excess_return — matching
-    what streamlit_app.py expects for the audit trail.
-    """
+    """Score a previous signal record — saves beats_agg, agg_return,
+    actual_return, excess_return matching what streamlit_app.py expects."""
     signal_date = record.get('date')
     etf         = record.get('signal')
     if not signal_date or not etf:
@@ -162,16 +155,16 @@ def score_signal(record: dict, prices: pd.DataFrame, bench: pd.Series) -> dict:
         if idx == 0:
             return record
 
-        prev_ts  = prices.index[idx - 1]
-        etf_ret  = float(prices.loc[sig_ts, etf]  / prices.loc[prev_ts, etf]  - 1)
-        agg_ret  = float(bench.loc[sig_ts]         / bench.loc[prev_ts]        - 1)
+        prev_ts = prices.index[idx - 1]
+        etf_ret = float(prices.loc[sig_ts, etf] / prices.loc[prev_ts, etf] - 1)
+        agg_ret = float(bench.loc[sig_ts]        / bench.loc[prev_ts]       - 1)
 
         record = record.copy()
-        record['actual_return']    = round(etf_ret, 6)
-        record['agg_return']       = round(agg_ret, 6)        # matches streamlit_app.py
-        record['excess_return']    = round(etf_ret - agg_ret, 6)
-        record['beats_agg']        = bool(etf_ret > agg_ret)  # ← critical for audit trail
-        record['scored']           = True
+        record['actual_return'] = round(etf_ret, 6)
+        record['agg_return']    = round(agg_ret, 6)
+        record['excess_return'] = round(etf_ret - agg_ret, 6)
+        record['beats_agg']     = bool(etf_ret > agg_ret)   # critical for audit trail
+        record['scored']        = True
 
         print(f"[Score] {signal_date} signal={etf} "
               f"actual={etf_ret:.2%} AGG={agg_ret:.2%} "
@@ -185,11 +178,10 @@ def score_signal(record: dict, prices: pd.DataFrame, bench: pd.Series) -> dict:
 
 def score_unscored_signals(history: list, prices: pd.DataFrame,
                            bench: pd.Series) -> tuple[list, bool]:
-    """Score any records that haven't been scored yet."""
     changed = False
     updated = []
     for rec in history:
-        # Score if either not scored at all, or beats_agg is missing
+        # Score if not scored yet, or beats_agg is missing (backfill old records)
         if not rec.get('scored', False) or 'beats_agg' not in rec:
             new_rec = score_signal(rec, prices, bench)
             if new_rec.get('scored') and 'beats_agg' in new_rec:
@@ -201,7 +193,6 @@ def score_unscored_signals(history: list, prices: pd.DataFrame,
 
 
 def train_on_window(window: dict, prices: pd.DataFrame) -> tuple:
-    """Train DDPG on the given reverse window and return (trainer, full_feat_norm)."""
     train_prices = prices[
         (prices.index >= window['train_start']) &
         (prices.index <= window['train_end'])
@@ -231,12 +222,26 @@ def train_on_window(window: dict, prices: pd.DataFrame) -> tuple:
 
     trainer = DDPGTrainer(window_id=window['id'])
 
-    original_max_epochs = cfg.MAX_EPOCHS
-    cfg.MAX_EPOCHS = 30
+    # ── EQUITY optimisation: fewer epochs + smaller buffer/batch ─────────────
+    original_max_epochs  = cfg.MAX_EPOCHS
+    original_batch_size  = cfg.BATCH_SIZE
+    original_buffer_size = cfg.BUFFER_SIZE
+
+    if cfg.ASSET_GROUP == "EQUITY":
+        cfg.MAX_EPOCHS  = 15
+        cfg.BATCH_SIZE  = 8
+        cfg.BUFFER_SIZE = 500
+        print(f"[Train] EQUITY mode — epochs=15, batch=8, buffer=500")
+    else:
+        cfg.MAX_EPOCHS  = 30
+        print(f"[Train] FI mode — epochs=30")
+
     try:
         trainer.train(env, checkpoint_dir)
     finally:
-        cfg.MAX_EPOCHS = original_max_epochs
+        cfg.MAX_EPOCHS  = original_max_epochs   # always restore
+        cfg.BATCH_SIZE  = original_batch_size
+        cfg.BUFFER_SIZE = original_buffer_size
 
     trainer.load_best(checkpoint_dir)
     trainer.actor.eval()
@@ -246,7 +251,6 @@ def train_on_window(window: dict, prices: pd.DataFrame) -> tuple:
 
 def get_signal(trainer: DDPGTrainer, full_feat_norm: np.ndarray,
                best_window: dict, signal_date: pd.Timestamp) -> dict:
-    """Run actor on the latest H-day window. Returns winner-takes-all signal."""
     H = cfg.H
     T = full_feat_norm.shape[0]
 
@@ -287,26 +291,26 @@ def get_signal(trainer: DDPGTrainer, full_feat_norm: np.ndarray,
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
+    # Limit CPU threads — prevents thrashing on 2-core GitHub runners
+    torch.set_num_threads(2)
+    torch.set_num_interop_threads(2)
+
     print("\n" + "="*60)
     print(f"FTRL Reverse Signal Generator — {cfg.ASSET_GROUP} group")
     print(f"Run date: {date.today()}")
     print("="*60)
 
-    # 1. Load data
     prices = load_etf_prices()
     bench  = load_benchmark_prices()
     prices, bench = align_dates(prices, bench)
 
-    # 2. Signal date
     last_data_date = prices.index[-1]
     signal_date    = next_trading_day(last_data_date)
     print(f"[Signal Date] Last data: {last_data_date.date()} → Next trading: {signal_date.date()}")
 
-    # 3. Find best reverse window
     summaries   = load_reverse_summaries()
     best_window = find_best_window(summaries)
 
-    # 4. Load history and score unscored signals
     prev_signal    = load_latest_reverse_signal()
     signal_history = load_reverse_signal_history()
 
@@ -319,13 +323,10 @@ def main():
         signal_history = updated_history
         print(f"[History] Scored some previously unscored records. Total: {len(signal_history)}")
 
-    # 5. Train on best window
     trainer, feat = train_on_window(best_window, prices)
 
-    # 6. Generate signal
     signal = get_signal(trainer, feat, best_window, signal_date)
 
-    # 7. Append to history
     existing_dates = {rec.get('date') for rec in signal_history}
     if signal['date'] not in existing_dates:
         signal_history.append(signal)
@@ -333,7 +334,6 @@ def main():
     else:
         print(f"[History] Signal for {signal['date']} already in history — skipping duplicate")
 
-    # 8. Save and push (group-aware)
     os.makedirs("/tmp/ftrl_reverse_predict", exist_ok=True)
 
     signal_path  = f"/tmp/ftrl_reverse_predict/latest_reverse_signal{cfg.OUTPUT_SUFFIX}.json"
