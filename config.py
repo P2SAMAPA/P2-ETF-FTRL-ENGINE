@@ -10,7 +10,7 @@ FI_ETFS = ['TLT', 'LQD', 'HYG', 'VNQ', 'GLD', 'SLV']
 # Equity ETFs (new module)
 EQUITY_ETFS = [
     "QQQ", "XLK", "XLF", "XLE", "XLV", "XLI",
-    "XLY", "XLP", "XLU", "XME", "GDX", "IWM"
+    "XLY", "XLP", "XLU", "XME", "GDX", "IWF", "XSD", "XBI", "IWM"
 ]
 
 # Select assets based on group
